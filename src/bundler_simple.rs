@@ -1,0 +1,345 @@
+use crate::node_downloader::NodeDownloader;
+use crate::platform::Platform;
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
+use base64::Engine as _;
+use zip::ZipWriter;
+
+/// Public entry-point used by `main.rs`.
+///
+/// * `project_path` – path that contains a `package.json`.
+/// * `output_path`  – optional path to the produced bundle file. If omitted, an
+///   automatically-generated name is used.
+///
+/// The implementation uses a simpler, more reliable approach based on Playwright's bundling strategy.
+pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>) -> Result<()> {
+    // 1. Validate & canonicalize input directory.
+    let project_path = project_path
+        .canonicalize()
+        .context("Failed to resolve project path")?;
+    let pkg_json = project_path.join("package.json");
+    anyhow::ensure!(pkg_json.exists(), "package.json not found in {}", project_path.display());
+
+    // 2. Read `package.json` for name/version (best-effort – fall back if absent).
+    let (app_name, app_version) = {
+        let content = fs::read_to_string(&pkg_json).context("Failed to read package.json")?;
+        let value: Value = serde_json::from_str(&content).context("Failed to parse package.json")?;
+        (
+            value["name"].as_str().unwrap_or("app").to_string(),
+            value["version"].as_str().unwrap_or("0.0.0").to_string(),
+        )
+    };
+
+    // 3. Determine Node version (via .nvmrc / .node-version or default to LTS 22.17.1).
+    let node_version = detect_node_version(&project_path).unwrap_or_else(|_| "22.17.1".into());
+
+    println!(
+        "Bundling {app_name} v{app_version} using Node.js v{node_version} for {plat}",
+        plat = Platform::current()
+    );
+
+    // 4. Resolve output path.
+    let output_path = output_path.unwrap_or_else(|| {
+        let ext = if Platform::current().is_windows() { ".exe" } else { "" };
+        PathBuf::from(format!(
+            "{name}-{ver}-{plat}{ext}",
+            name = &app_name,
+            ver  = &app_version,
+            plat = Platform::current(),
+            ext  = ext,
+        ))
+    });
+
+    // 5. Ensure portable Node binary is available.
+    let node_downloader = NodeDownloader::new_with_persistent_cache(node_version.clone())?;
+    let node_executable = node_downloader.ensure_node_binary().await?;
+    let node_root = node_executable
+        .parent()
+        .expect("node executable must have a parent")
+        .parent()
+        .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()));
+
+    // 6. Create an in-memory zip archive containing `/app` and `/node` directories.
+    let mut zip_data: Vec<u8> = Vec::new();
+    {
+        let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
+        let opts: zip::write::FileOptions<'static, ()> = zip::write::FileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // Copy project directory.
+        add_dir_to_zip(&mut zip, &project_path, Path::new("app"), opts)?;
+        // Copy Node runtime directory.
+        add_dir_to_zip(&mut zip, node_root, Path::new("node"), opts)?;
+        zip.finish()?;
+    }
+
+    // 7. Build self-extracting launcher using a more reliable approach.
+    create_self_extracting_executable(&output_path, zip_data, &app_name)?;
+
+    println!("Bundle created at {}", output_path.display());
+    Ok(())
+}
+
+/// Very lightweight Node version detection.
+fn detect_node_version(project_path: &Path) -> Result<String> {
+    for file in [".nvmrc", ".node-version"] {
+        let path = project_path.join(file);
+        if path.exists() {
+            let v = fs::read_to_string(&path)?;
+            return Ok(normalise_node_version(v.trim()));
+        }
+    }
+    anyhow::bail!("Node version not found")
+}
+
+fn normalise_node_version(raw: &str) -> String {
+    raw.trim_start_matches('v').to_owned()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Self-extracting executable generation using a more reliable approach
+// ────────────────────────────────────────────────────────────────────────────
+
+fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, app_name: &str) -> Result<()> {
+    let build_id = Uuid::new_v4();
+    
+    if Platform::current().is_windows() {
+        create_windows_executable(out, zip_data, app_name, &build_id.to_string())
+    } else {
+        create_unix_executable(out, zip_data, app_name, &build_id.to_string())
+    }
+}
+
+fn create_unix_executable(out: &Path, zip_data: Vec<u8>, app_name: &str, build_id: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut file = fs::File::create(out).context("Failed to create output executable")?;
+
+    // Write a simpler, more reliable shell script
+    let script = format!(r#"#!/bin/bash
+set -e
+
+# Determine cache directory using directories pattern
+if [ -n "$XDG_CACHE_HOME" ]; then
+    CACHE_DIR="$XDG_CACHE_HOME/banderole"
+elif [ -n "$HOME" ]; then
+    CACHE_DIR="$HOME/.cache/banderole"
+else
+    CACHE_DIR="/tmp/banderole-cache"
+fi
+
+APP_DIR="$CACHE_DIR/{}"
+
+# Check if already extracted and ready
+if [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
+    # Already extracted, run directly
+    cd "$APP_DIR/app"
+    
+    # Find main script from package.json
+    MAIN_SCRIPT=$("$APP_DIR/node/bin/node" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2>/dev/null || echo "index.js")
+    
+    if [ -f "$MAIN_SCRIPT" ]; then
+        exec "$APP_DIR/node/bin/node" "$MAIN_SCRIPT" "$@"
+    else
+        echo "Error: Main script '$MAIN_SCRIPT' not found" >&2
+        exit 1
+    fi
+fi
+
+# Extract application
+echo "Extracting {} to cache..." >&2
+mkdir -p "$APP_DIR"
+
+# Create a temporary file for the zip data
+TEMP_ZIP=$(mktemp)
+trap "rm -f '$TEMP_ZIP'" EXIT
+
+# Extract embedded zip data (everything after the __DATA__ marker)
+awk '/^__DATA__$/{{p=1;next}} p{{print}}' "$0" | base64 -d > "$TEMP_ZIP"
+
+# Verify we got valid zip data
+if [ ! -s "$TEMP_ZIP" ]; then
+    echo "Error: Failed to extract bundle data" >&2
+    exit 1
+fi
+
+# Extract the bundle
+if ! unzip -q "$TEMP_ZIP" -d "$APP_DIR" 2>/dev/null; then
+    echo "Error: Failed to extract bundle" >&2
+    rm -rf "$APP_DIR"
+    exit 1
+fi
+
+# Verify extraction worked
+if [ ! -f "$APP_DIR/app/package.json" ] || [ ! -x "$APP_DIR/node/bin/node" ]; then
+    echo "Error: Bundle extraction incomplete" >&2
+    rm -rf "$APP_DIR"
+    exit 1
+fi
+
+# Run the application
+cd "$APP_DIR/app"
+MAIN_SCRIPT=$("$APP_DIR/node/bin/node" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2>/dev/null || echo "index.js")
+
+if [ -f "$MAIN_SCRIPT" ]; then
+    exec "$APP_DIR/node/bin/node" "$MAIN_SCRIPT" "$@"
+else
+    echo "Error: Main script '$MAIN_SCRIPT' not found" >&2
+    exit 1
+fi
+
+__DATA__
+"#, build_id, app_name);
+
+    file.write_all(script.as_bytes())?;
+    
+    // Append base64-encoded zip data
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
+    file.write_all(encoded.as_bytes())?;
+    file.write_all(b"\n")?;
+
+    // Make executable
+    let mut perms = file.metadata()?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(out, perms)?;
+    
+    Ok(())
+}
+
+fn create_windows_executable(out: &Path, zip_data: Vec<u8>, app_name: &str, build_id: &str) -> Result<()> {
+    let mut file = fs::File::create(out).context("Failed to create output executable")?;
+
+    // Create a more reliable Windows batch script
+    let script = format!(r#"@echo off
+setlocal enabledelayedexpansion
+
+REM Determine cache directory
+set "CACHE_DIR=%LOCALAPPDATA%\banderole"
+set "APP_DIR=!CACHE_DIR!\{}"
+
+REM Check if already extracted and ready
+if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
+    cd /d "!APP_DIR!\app"
+    
+    REM Find main script
+    for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+    if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
+    
+    if exist "!MAIN_SCRIPT!" (
+        "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
+        exit /b !errorlevel!
+    ) else (
+        echo Error: Main script '!MAIN_SCRIPT!' not found >&2
+        exit /b 1
+    )
+)
+
+REM Extract application
+echo Extracting {} to cache... >&2
+if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
+if not exist "!APP_DIR!" mkdir "!APP_DIR!"
+
+REM Create temp file for zip
+set "TEMP_ZIP=%TEMP%\banderole-bundle-%RANDOM%.zip"
+
+REM Extract embedded zip data using PowerShell
+powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('%TEMP_ZIP%', [System.Convert]::FromBase64String($data))"
+
+if not exist "%TEMP_ZIP%" (
+    echo Error: Failed to extract bundle data >&2
+    exit /b 1
+)
+
+REM Extract the bundle using PowerShell
+powershell -NoProfile -Command "try {{ Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
+set "EXTRACT_RESULT=!errorlevel!"
+del "%TEMP_ZIP%" 2>nul
+
+if !EXTRACT_RESULT! neq 0 (
+    echo Error: Failed to extract bundle >&2
+    rmdir /s /q "!APP_DIR!" 2>nul
+    exit /b 1
+)
+
+REM Verify extraction worked
+if not exist "!APP_DIR!\app\package.json" (
+    echo Error: Bundle extraction incomplete >&2
+    rmdir /s /q "!APP_DIR!" 2>nul
+    exit /b 1
+)
+
+if not exist "!APP_DIR!\node\node.exe" (
+    echo Error: Node.js executable not found >&2
+    rmdir /s /q "!APP_DIR!" 2>nul
+    exit /b 1
+)
+
+REM Run the application
+cd /d "!APP_DIR!\app"
+for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
+
+if exist "!MAIN_SCRIPT!" (
+    "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
+    exit /b !errorlevel!
+) else (
+    echo Error: Main script '!MAIN_SCRIPT!' not found >&2
+    exit /b 1
+)
+
+__DATA__
+"#, build_id, app_name);
+
+    file.write_all(script.as_bytes())?;
+    
+    // Append base64-encoded zip data
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
+    file.write_all(encoded.as_bytes())?;
+    
+    Ok(())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Utility helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+fn add_dir_to_zip<W>(
+    zip: &mut ZipWriter<W>,
+    src_dir: &Path,
+    dest_dir: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    for entry in walkdir::WalkDir::new(src_dir) {
+        let entry = entry?;
+        let path = entry.path();
+        let rel_path = path.strip_prefix(src_dir).unwrap();
+        let zip_path = dest_dir.join(rel_path);
+
+        if entry.file_type().is_dir() {
+            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            continue;
+        }
+
+        // Get file permissions to preserve executable bits
+        let metadata = fs::metadata(path)?;
+        let permissions = metadata.permissions();
+        let mode = permissions.mode();
+        
+        // Create file options with Unix permissions
+        let file_opts = opts.unix_permissions(mode);
+        
+        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
+        let data = fs::read(path).context("Failed to read file while zipping")?;
+        zip.write_all(&data)?;
+    }
+    Ok(())
+}

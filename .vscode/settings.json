@@ -1,0 +1,19 @@
+{
+    "cSpell.words": [
+        "chrono",
+        "enabledelayedexpansion",
+        "ERRORLEVEL",
+        "LOCALAPPDATA",
+        "mktemp",
+        "nvmrc",
+        "outpath",
+        "readlink",
+        "reqwest",
+        "rustc",
+        "serde",
+        "setlocal",
+        "taskkill",
+        "USERPROFILE",
+        "walkdir"
+    ]
+}

@@ -1,0 +1,64 @@
+use std::env;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    LinuxX64,
+    LinuxArm64,
+    MacosX64,
+    MacosArm64,
+    WindowsX64,
+    WindowsArm64,
+}
+
+impl Platform {
+    pub fn current() -> Self {
+        let os = env::consts::OS;
+        let arch = env::consts::ARCH;
+
+        match (os, arch) {
+            ("linux", "x86_64") => Platform::LinuxX64,
+            ("linux", "aarch64") => Platform::LinuxArm64,
+            ("macos", "x86_64") => Platform::MacosX64,
+            ("macos", "aarch64") => Platform::MacosArm64,
+            ("windows", "x86_64") => Platform::WindowsX64,
+            ("windows", "aarch64") => Platform::WindowsArm64,
+            _ => panic!("Unsupported platform: {}-{}", os, arch),
+        }
+    }
+
+    pub fn node_archive_name(&self, version: &str) -> String {
+        match self {
+            Platform::LinuxX64 => format!("node-v{}-linux-x64.tar.gz", version),
+            Platform::LinuxArm64 => format!("node-v{}-linux-arm64.tar.gz", version),
+            Platform::MacosX64 => format!("node-v{}-darwin-x64.tar.gz", version),
+            Platform::MacosArm64 => format!("node-v{}-darwin-arm64.tar.gz", version),
+            Platform::WindowsX64 => format!("node-v{}-win-x64.zip", version),
+            Platform::WindowsArm64 => format!("node-v{}-win-arm64.zip", version),
+        }
+    }
+
+    pub fn node_executable_path(&self) -> PathBuf {
+        match self {
+            Platform::WindowsX64 | Platform::WindowsArm64 => PathBuf::from("node.exe"),
+            _ => PathBuf::from("bin").join("node"),
+        }
+    }
+
+    pub fn is_windows(&self) -> bool {
+        matches!(self, Platform::WindowsX64 | Platform::WindowsArm64)
+    }
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LinuxX64 => write!(f, "linux-x64"),
+            Self::LinuxArm64 => write!(f, "linux-arm64"),
+            Self::MacosX64 => write!(f, "darwin-x64"),
+            Self::MacosArm64 => write!(f, "darwin-arm64"),
+            Self::WindowsX64 => write!(f, "win32-x64"),
+            Self::WindowsArm64 => write!(f, "win32-arm64"),
+        }
+    }
+}
