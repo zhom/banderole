@@ -19,6 +19,7 @@ pub struct NodeDownloader {
 }
 
 impl NodeDownloader {
+    #[allow(dead_code)]
     pub fn new(cache_dir: PathBuf, node_version: String) -> Self {
         Self {
             platform: Platform::current(),

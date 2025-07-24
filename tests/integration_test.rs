@@ -113,15 +113,9 @@ process.exit(0);"#;
 
     // Find the created executable
     let executable_path = temp_dir.path().join(if cfg!(windows) {
-        "integration-test-app-1.0.0-win32-x64.exe"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "integration-test-app-1.0.0-darwin-arm64"
-    } else if cfg!(target_os = "macos") {
-        "integration-test-app-1.0.0-darwin-x64"
-    } else if cfg!(target_arch = "aarch64") {
-        "integration-test-app-1.0.0-linux-arm64"
+        "integration-test-app.exe"
     } else {
-        "integration-test-app-1.0.0-linux-x64"
+        "integration-test-app"
     });
 
     if !executable_path.exists() {
@@ -289,15 +283,9 @@ process.exit(0);"#;
 
     // Find and run the created executable to verify it uses the correct Node version
     let executable_name = if cfg!(target_os = "windows") {
-        "nvmrc-test-app-1.0.0-win32-x64.exe"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "nvmrc-test-app-1.0.0-darwin-arm64"
-    } else if cfg!(target_os = "macos") {
-        "nvmrc-test-app-1.0.0-darwin-x64"
-    } else if cfg!(target_arch = "aarch64") {
-        "nvmrc-test-app-1.0.0-linux-arm64"
+        "nvmrc-test-app.exe"
     } else {
-        "nvmrc-test-app-1.0.0-linux-x64"
+        "nvmrc-test-app"
     };
 
     let executable_path = temp_dir.path().join(executable_name);

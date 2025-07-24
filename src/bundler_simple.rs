@@ -14,9 +14,10 @@ use zip::ZipWriter;
 /// * `project_path` – path that contains a `package.json`.
 /// * `output_path`  – optional path to the produced bundle file. If omitted, an
 ///   automatically-generated name is used.
+/// * `custom_name` – optional custom name for the executable.
 ///
 /// The implementation uses a simpler, more reliable approach based on Playwright's bundling strategy.
-pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>) -> Result<()> {
+pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>, custom_name: Option<String>) -> Result<()> {
     // 1. Validate & canonicalize input directory.
     let project_path = project_path
         .canonicalize()
@@ -45,13 +46,8 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>)
     // 4. Resolve output path.
     let output_path = output_path.unwrap_or_else(|| {
         let ext = if Platform::current().is_windows() { ".exe" } else { "" };
-        PathBuf::from(format!(
-            "{name}-{ver}-{plat}{ext}",
-            name = &app_name,
-            ver  = &app_version,
-            plat = Platform::current(),
-            ext  = ext,
-        ))
+        let base_name = custom_name.as_ref().unwrap_or(&app_name);
+        PathBuf::from(format!("{base_name}{ext}"))
     });
 
     // 5. Ensure portable Node binary is available.
@@ -104,17 +100,17 @@ fn normalise_node_version(raw: &str) -> String {
 // Self-extracting executable generation using a more reliable approach
 // ────────────────────────────────────────────────────────────────────────────
 
-fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, app_name: &str) -> Result<()> {
+fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, _app_name: &str) -> Result<()> {
     let build_id = Uuid::new_v4();
     
     if Platform::current().is_windows() {
-        create_windows_executable(out, zip_data, app_name, &build_id.to_string())
+        create_windows_executable(out, zip_data, &build_id.to_string())
     } else {
-        create_unix_executable(out, zip_data, app_name, &build_id.to_string())
+        create_unix_executable(out, zip_data, &build_id.to_string())
     }
 }
 
-fn create_unix_executable(out: &Path, zip_data: Vec<u8>, app_name: &str, build_id: &str) -> Result<()> {
+fn create_unix_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut file = fs::File::create(out).context("Failed to create output executable")?;
@@ -151,7 +147,6 @@ if [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
 fi
 
 # Extract application
-echo "Extracting {} to cache..." >&2
 mkdir -p "$APP_DIR"
 
 # Create a temporary file for the zip data
@@ -193,7 +188,7 @@ else
 fi
 
 __DATA__
-"#, build_id, app_name);
+"#, build_id);
 
     file.write_all(script.as_bytes())?;
     
@@ -210,7 +205,7 @@ __DATA__
     Ok(())
 }
 
-fn create_windows_executable(out: &Path, zip_data: Vec<u8>, app_name: &str, build_id: &str) -> Result<()> {
+fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
     let mut file = fs::File::create(out).context("Failed to create output executable")?;
 
     // Create a more reliable Windows batch script
@@ -239,7 +234,6 @@ if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
 )
 
 REM Extract application
-echo Extracting {} to cache... >&2
 if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
@@ -292,7 +286,7 @@ if exist "!MAIN_SCRIPT!" (
 )
 
 __DATA__
-"#, build_id, app_name);
+"#, build_id);
 
     file.write_all(script.as_bytes())?;
     

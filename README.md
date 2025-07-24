@@ -1,12 +1,10 @@
 # Banderole
 
-Create cross-platform single-executables for node.js projects.
+Create cross-platform single-executables for Node.js projects.
 
-Unlike [Node.js SEA](https://nodejs.org/api/single-executable-applications.html) or [pkg](https://github.com/yao-pkg/pkg), it bundles compiled node.js app, all node modules, and a portable node binary into a single executable, and on the first launch it will unpack everything into a cache directory. Every subsequent execution of the binary will point to the extract data.
+Banderole bundles your Node.js app, all dependencies, and a portable Node binary into a single executable. On first launch, it unpacks to a cache directory for fast subsequent executions.
 
-While it results in the same performance as executing `/path/to/portable/node my/app/index.js` (except for the first execution), it also means that binaries are a lot larger than, say, pkg, which traverses your project and dependencies to include only relevant files.
-
-You should stick to pkg (or Node.js SEA once it is stable enough) unless you have to deal with an app that has a nested dependency that has dynamic imports or imports non-javascript files, which makes it difficult to patch.
+Unlike [Node.js SEA](https://nodejs.org/api/single-executable-applications.html) or [pkg](https://github.com/yao-pkg/pkg), banderole handles complex projects with dynamic imports and non-JavaScript files without requiring patches, but since it includes all dependencies by default, it has significantly large filesize.
 
 ## Installation
 
@@ -17,7 +15,17 @@ cargo install banderole
 ## Usage
 
 ```sh
-banderole project-dir output-dir
+# Bundle a project using the project name
+banderole bundle /path/to/project
+
+# Bundle with custom output path
+banderole bundle /path/to/project --output /path/to/output/executable
+
+# Bundle with custom name
+banderole bundle /path/to/project --name my-app
+
+# Bundle with both custom output and name
+banderole bundle /path/to/project --output /path/to/my-app --name my-app
 ```
 
 ## Feature List

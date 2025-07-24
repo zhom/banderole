@@ -26,6 +26,9 @@ enum Commands {
         /// Output path for the bundle (optional)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Custom name for the executable (optional)
+        #[arg(short, long)]
+        name: Option<String>,
     },
 }
 
@@ -34,8 +37,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Bundle { path, output } => {
-            bundler_simple::bundle_project(path, output).await?;
+        Commands::Bundle { path, output, name } => {
+            bundler_simple::bundle_project(path, output, name).await?;
         }
     }
 
