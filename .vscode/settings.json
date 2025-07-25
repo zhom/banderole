@@ -4,6 +4,7 @@
         "enabledelayedexpansion",
         "ERRORLEVEL",
         "LOCALAPPDATA",
+        "lockfiles",
         "mktemp",
         "nvmrc",
         "outpath",

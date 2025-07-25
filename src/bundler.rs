@@ -9,6 +9,7 @@ use uuid::Uuid;
 use base64::Engine as _;
 use zip::ZipWriter;
 
+
 /// Public entry-point used by `main.rs`.
 ///
 /// * `project_path` – path that contains a `package.json`.
@@ -72,29 +73,9 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
         // Copy the determined source directory
         add_dir_to_zip(&mut zip, &source_dir, Path::new("app"), opts)?;
         
-        // If we're using a subdirectory, also copy the root package.json with adjusted paths
-        if source_dir != project_path {
-            let root_package_json = project_path.join("package.json");
-            if root_package_json.exists() {
-                zip.start_file("app/package.json", opts)?;
-                
-                // Read and modify package.json to adjust the main path
-                let content = fs::read_to_string(&root_package_json).context("Failed to read root package.json")?;
-                let mut package_value: Value = serde_json::from_str(&content).context("Failed to parse root package.json")?;
-                
-                // Adjust the main field if it points to the source directory
-                if let Some(main) = package_value["main"].as_str() {
-                    let main_path = project_path.join(main);
-                    if let Ok(relative_to_source) = main_path.strip_prefix(&source_dir) {
-                        package_value["main"] = Value::String(relative_to_source.to_string_lossy().to_string());
-                    }
-                }
-                
-                let modified_content = serde_json::to_string_pretty(&package_value)
-                    .context("Failed to serialize modified package.json")?;
-                zip.write_all(modified_content.as_bytes())?;
-            }
-        }
+        // Handle dependencies and package.json
+        bundle_dependencies(&mut zip, &project_path, &source_dir, &package_value, opts)?;
+        
         // Copy Node runtime directory.
         add_dir_to_zip(&mut zip, node_root, Path::new("node"), opts)?;
         zip.finish()?;
@@ -105,6 +86,493 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
 
     println!("Bundle created at {}", output_path.display());
     Ok(())
+}
+
+/// Bundle dependencies with improved package manager support
+fn bundle_dependencies<W>(
+    zip: &mut ZipWriter<W>,
+    project_path: &Path,
+    source_dir: &Path,
+    _package_value: &Value,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    // If we're using a subdirectory, copy the root package.json with adjusted paths
+    if source_dir != project_path {
+        let root_package_json = project_path.join("package.json");
+        if root_package_json.exists() {
+            zip.start_file("app/package.json", opts)?;
+            
+            // Read and modify package.json to adjust the main path
+            let content = fs::read_to_string(&root_package_json).context("Failed to read root package.json")?;
+            let mut package_value: Value = serde_json::from_str(&content).context("Failed to parse root package.json")?;
+            
+            // Adjust the main field if it points to the source directory
+            if let Some(main) = package_value["main"].as_str() {
+                let main_path = project_path.join(main);
+                if let Ok(relative_to_source) = main_path.strip_prefix(&source_dir) {
+                    package_value["main"] = Value::String(relative_to_source.to_string_lossy().to_string());
+                }
+            }
+            
+            let modified_content = serde_json::to_string_pretty(&package_value)
+                .context("Failed to serialize modified package.json")?;
+            zip.write_all(modified_content.as_bytes())?;
+        }
+    }
+
+    // Find and bundle dependencies with improved package manager support
+    let deps_result = find_and_bundle_dependencies(zip, project_path, opts)?;
+    
+    // Log the result
+    if deps_result.dependencies_found {
+        println!("Bundled dependencies: {}", deps_result.source_description);
+    } else {
+        println!("Warning: No dependencies found to bundle");
+    }
+    
+    // Log any warnings
+    for warning in &deps_result.warnings {
+        println!("Warning: {}", warning);
+    }
+    
+    Ok(())
+}
+
+struct DependenciesResult {
+    dependencies_found: bool,
+    source_description: String,
+    warnings: Vec<String>,
+}
+
+/// Find and bundle dependencies with support for different package managers and workspace configurations
+fn find_and_bundle_dependencies<W>(
+    zip: &mut ZipWriter<W>,
+    project_path: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<DependenciesResult>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let mut warnings = Vec::new();
+    
+    // Strategy 1: Check for node_modules in the project directory
+    let project_node_modules = project_path.join("node_modules");
+    if project_node_modules.exists() {
+        let package_manager = detect_package_manager(&project_node_modules, project_path);
+        
+        match package_manager {
+            PackageManager::Pnpm => {
+                // For pnpm, we need to bundle both node_modules and .pnpm if it exists
+                bundle_pnpm_dependencies(zip, project_path, opts)?;
+                return Ok(DependenciesResult {
+                    dependencies_found: true,
+                    source_description: "pnpm dependencies (node_modules + .pnpm)".to_string(),
+                    warnings,
+                });
+            }
+            PackageManager::Yarn => {
+                // For yarn, bundle node_modules with improved symlink resolution
+                bundle_node_modules_with_symlink_resolution(zip, &project_node_modules, opts)?;
+                return Ok(DependenciesResult {
+                    dependencies_found: true,
+                    source_description: "yarn dependencies (node_modules)".to_string(),
+                    warnings,
+                });
+            }
+            PackageManager::Npm | PackageManager::Unknown => {
+                // For npm or unknown, use standard bundling with improved symlink handling
+                bundle_node_modules_with_symlink_resolution(zip, &project_node_modules, opts)?;
+                return Ok(DependenciesResult {
+                    dependencies_found: true,
+                    source_description: "npm dependencies (node_modules)".to_string(),
+                    warnings,
+                });
+            }
+        }
+    }
+
+    // Strategy 2: Check for workspace scenario - look in parent directories
+    let mut current_path = project_path.parent();
+    while let Some(parent_path) = current_path {
+        let parent_node_modules = parent_path.join("node_modules");
+        let parent_package_json = parent_path.join("package.json");
+        
+        if parent_node_modules.exists() && parent_package_json.exists() {
+            // Check if this is a workspace root
+            if let Ok(content) = fs::read_to_string(&parent_package_json) {
+                if let Ok(pkg_value) = serde_json::from_str::<Value>(&content) {
+                    if pkg_value["workspaces"].is_array() || pkg_value["workspaces"]["packages"].is_array() {
+                        warnings.push(format!("Found workspace dependencies in parent directory: {}", parent_path.display()));
+                        
+                        let package_manager = detect_package_manager(&parent_node_modules, parent_path);
+                        
+                        match package_manager {
+                            PackageManager::Pnpm => {
+                                bundle_pnpm_dependencies(zip, parent_path, opts)?;
+                                return Ok(DependenciesResult {
+                                    dependencies_found: true,
+                                    source_description: format!("workspace pnpm dependencies from {}", parent_path.display()),
+                                    warnings,
+                                });
+                            }
+                            _ => {
+                                bundle_node_modules_with_symlink_resolution(zip, &parent_node_modules, opts)?;
+                                return Ok(DependenciesResult {
+                                    dependencies_found: true,
+                                    source_description: format!("workspace dependencies from {}", parent_path.display()),
+                                    warnings,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        current_path = parent_path.parent();
+        
+        // Don't go too far up the directory tree
+        if parent_path.components().count() < 2 {
+            break;
+        }
+    }
+
+    Ok(DependenciesResult {
+        dependencies_found: false,
+        source_description: "no dependencies found".to_string(),
+        warnings,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PackageManager {
+    Npm,
+    Yarn,
+    Pnpm,
+    Unknown,
+}
+
+/// Detect the package manager based on the node_modules structure and lockfiles
+fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> PackageManager {
+    // Check for pnpm-specific structure
+    if node_modules_path.join(".pnpm").exists() {
+        return PackageManager::Pnpm;
+    }
+    
+    // Check for lockfiles in the project directory
+    if project_path.join("pnpm-lock.yaml").exists() {
+        return PackageManager::Pnpm;
+    }
+    
+    if project_path.join("yarn.lock").exists() {
+        return PackageManager::Yarn;
+    }
+    
+    if project_path.join("package-lock.json").exists() {
+        return PackageManager::Npm;
+    }
+    
+    PackageManager::Unknown
+}
+
+/// Bundle pnpm dependencies by creating a flattened node_modules structure
+fn bundle_pnpm_dependencies<W>(
+    zip: &mut ZipWriter<W>,
+    project_path: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let node_modules_path = project_path.join("node_modules");
+    let pnpm_dir = node_modules_path.join(".pnpm");
+    
+    if !pnpm_dir.exists() {
+        // If no .pnpm directory, fall back to simple copy
+        if node_modules_path.exists() {
+            add_dir_to_zip_no_follow(zip, &node_modules_path, Path::new("app/node_modules"), opts)?;
+        }
+        return Ok(());
+    }
+
+    // For pnpm, use a smarter approach that only includes actually needed packages
+    let mut packages_to_bundle = std::collections::HashSet::new();
+    
+    // Start with direct dependencies from package.json
+    let package_json_path = project_path.join("package.json");
+    if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
+        if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+            if let Some(deps) = package_json["dependencies"].as_object() {
+                for dep_name in deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            // Only include devDependencies if they're actually used in production
+            // For now, skip them to keep the bundle smaller
+        }
+    }
+    
+    // Recursively resolve dependencies for each package
+    let mut resolved_packages = std::collections::HashSet::new();
+    for package_name in &packages_to_bundle {
+        resolve_package_dependencies(
+            &node_modules_path,
+            &pnpm_dir,
+            package_name,
+            &mut resolved_packages,
+            0, // depth
+        )?;
+    }
+
+    println!("Bundling {} packages (resolved dependencies) for pnpm project", resolved_packages.len());
+
+    // Copy each resolved package
+    for package_name in &resolved_packages {
+        if let Err(e) = copy_pnpm_package_comprehensive(zip, &node_modules_path, &pnpm_dir, package_name, opts) {
+            println!("Warning: Failed to copy package {}: {}", package_name, e);
+        }
+    }
+
+    // Copy .bin directory if it exists
+    let bin_dir = node_modules_path.join(".bin");
+    if bin_dir.exists() {
+        add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
+    }
+
+    // Copy important pnpm metadata files
+    let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
+    for file_name in important_files {
+        let file_path = node_modules_path.join(file_name);
+        if file_path.exists() {
+            let dest_path = Path::new("app/node_modules").join(file_name);
+            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            let data = fs::read(&file_path)?;
+            zip.write_all(&data)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively resolve dependencies for a package
+fn resolve_package_dependencies(
+    node_modules_path: &Path,
+    pnpm_dir: &Path,
+    package_name: &str,
+    resolved: &mut std::collections::HashSet<String>,
+    depth: usize,
+) -> Result<()> {
+    // Avoid infinite recursion
+    if depth > 20 {
+        return Ok(());
+    }
+    
+    // If already resolved, skip
+    if resolved.contains(package_name) {
+        return Ok(());
+    }
+    
+    resolved.insert(package_name.to_string());
+    
+    // Try to find the package and read its package.json
+    let package_json_content = match find_package_json_content(node_modules_path, pnpm_dir, package_name) {
+        Ok(content) => content,
+        Err(_) => return Ok(()), // Skip packages we can't find
+    };
+    
+    if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+        // Add production dependencies
+        if let Some(deps) = package_json["dependencies"].as_object() {
+            for dep_name in deps.keys() {
+                resolve_package_dependencies(node_modules_path, pnpm_dir, dep_name, resolved, depth + 1)?;
+            }
+        }
+        
+        // Also include peerDependencies that are actually installed
+        if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
+            for dep_name in peer_deps.keys() {
+                // Only include if it actually exists
+                if package_exists_in_pnpm(node_modules_path, pnpm_dir, dep_name) {
+                    resolve_package_dependencies(node_modules_path, pnpm_dir, dep_name, resolved, depth + 1)?;
+                }
+            }
+        }
+        
+        // Also include optionalDependencies that are actually installed (important for native bindings)
+        if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
+            for dep_name in optional_deps.keys() {
+                // Only include if it actually exists
+                if package_exists_in_pnpm(node_modules_path, pnpm_dir, dep_name) {
+                    resolve_package_dependencies(node_modules_path, pnpm_dir, dep_name, resolved, depth + 1)?;
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Find package.json content for a package
+fn find_package_json_content(
+    node_modules_path: &Path,
+    pnpm_dir: &Path,
+    package_name: &str,
+) -> Result<String> {
+    // First try top-level
+    let top_level_package = node_modules_path.join(package_name);
+    if top_level_package.exists() {
+        let target_path = if top_level_package.is_symlink() {
+            let target = fs::read_link(&top_level_package)?;
+            if target.is_absolute() {
+                target
+            } else {
+                top_level_package.parent().unwrap().join(target).canonicalize()?
+            }
+        } else {
+            top_level_package
+        };
+        
+        let package_json_path = target_path.join("package.json");
+        if package_json_path.exists() {
+            return fs::read_to_string(&package_json_path).context("Failed to read package.json");
+        }
+    }
+    
+    // Try .pnpm directory
+    for entry in fs::read_dir(pnpm_dir)? {
+        let entry = entry?;
+        let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
+        
+        if let Some(extracted_name) = extract_package_name_from_pnpm(&pnpm_package_name) {
+            if extracted_name == package_name {
+                let pnpm_package_path = entry.path().join("node_modules").join(package_name);
+                let package_json_path = pnpm_package_path.join("package.json");
+                if package_json_path.exists() {
+                    return fs::read_to_string(&package_json_path).context("Failed to read package.json");
+                }
+            }
+        }
+    }
+    
+    anyhow::bail!("Could not find package.json for {}", package_name)
+}
+
+/// Check if a package exists in the pnpm structure
+fn package_exists_in_pnpm(
+    node_modules_path: &Path,
+    pnpm_dir: &Path,
+    package_name: &str,
+) -> bool {
+    // Check top-level
+    if node_modules_path.join(package_name).exists() {
+        return true;
+    }
+    
+    // Check .pnpm
+    if let Ok(entries) = fs::read_dir(pnpm_dir) {
+        for entry in entries.flatten() {
+            let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
+            if let Some(extracted_name) = extract_package_name_from_pnpm(&pnpm_package_name) {
+                if extracted_name == package_name {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    false
+}
+
+/// Extract package name from pnpm directory name (e.g., "adm-zip@0.5.16" -> "adm-zip")
+fn extract_package_name_from_pnpm(pnpm_name: &str) -> Option<String> {
+    // Handle scoped packages like "@sindresorhus+is@4.6.0" -> "@sindresorhus/is"
+    if pnpm_name.starts_with('@') {
+        if let Some(at_pos) = pnpm_name.rfind('@') {
+            if at_pos > 0 { // Make sure it's not the first @
+                let package_part = &pnpm_name[..at_pos];
+                // Convert + back to / for scoped packages
+                return Some(package_part.replace('+', "/"));
+            }
+        }
+        // If no version found, just convert + to /
+        return Some(pnpm_name.replace('+', "/"));
+    }
+    
+    // Handle regular packages like "adm-zip@0.5.16"
+    if let Some(at_pos) = pnpm_name.find('@') {
+        Some(pnpm_name[..at_pos].to_string())
+    } else {
+        Some(pnpm_name.to_string())
+    }
+}
+
+/// Copy a package, trying both top-level and .pnpm locations
+fn copy_pnpm_package_comprehensive<W>(
+    zip: &mut ZipWriter<W>,
+    node_modules_path: &Path,
+    pnpm_dir: &Path,
+    package_name: &str,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let dest_path = Path::new("app/node_modules").join(package_name);
+    
+    // First try to find it as a top-level package
+    let top_level_package = node_modules_path.join(package_name);
+    if top_level_package.exists() {
+        let target_path = if top_level_package.is_symlink() {
+            // Follow the symlink
+            let target = fs::read_link(&top_level_package)?;
+            if target.is_absolute() {
+                target
+            } else {
+                top_level_package.parent().unwrap().join(target).canonicalize()?
+            }
+        } else {
+            top_level_package
+        };
+        
+        if target_path.exists() {
+            add_dir_to_zip_no_follow(zip, &target_path, &dest_path, opts)?;
+            return Ok(());
+        }
+    }
+    
+    // If not found at top level, search in .pnpm directory
+    for entry in fs::read_dir(pnpm_dir)? {
+        let entry = entry?;
+        let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
+        
+        // Check if this .pnpm entry matches our package name
+        if let Some(extracted_name) = extract_package_name_from_pnpm(&pnpm_package_name) {
+            if extracted_name == package_name {
+                let pnpm_package_path = entry.path().join("node_modules").join(package_name);
+                if pnpm_package_path.exists() {
+                    add_dir_to_zip_no_follow(zip, &pnpm_package_path, &dest_path, opts)?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Bundle node_modules with improved symlink resolution
+fn bundle_node_modules_with_symlink_resolution<W>(
+    zip: &mut ZipWriter<W>,
+    node_modules_path: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    add_dir_to_zip(zip, node_modules_path, Path::new("app/node_modules"), opts)
 }
 
 /// Very lightweight Node version detection.
@@ -481,9 +949,7 @@ fn add_dir_to_zip<W>(
 where
     W: Write + Read + std::io::Seek,
 {
-    use std::os::unix::fs::PermissionsExt;
-
-    for entry in walkdir::WalkDir::new(src_dir) {
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(true) {
         let entry = entry?;
         let path = entry.path();
         let rel_path = path.strip_prefix(src_dir).unwrap();
@@ -494,13 +960,26 @@ where
             continue;
         }
 
-        // Get file permissions to preserve executable bits
-        let metadata = fs::metadata(path)?;
-        let permissions = metadata.permissions();
-        let mode = permissions.mode();
-        
-        // Create file options with Unix permissions
-        let file_opts = opts.unix_permissions(mode);
+        // Process regular files and symlinks, skip other special files
+        if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
+            continue;
+        }
+
+        // Get file permissions to preserve executable bits (Unix only)
+        let file_opts = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = fs::metadata(path)?;
+                let permissions = metadata.permissions();
+                let mode = permissions.mode();
+                opts.unix_permissions(mode)
+            }
+            #[cfg(not(unix))]
+            {
+                opts
+            }
+        };
         
         zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
         let data = fs::read(path).context("Failed to read file while zipping")?;
@@ -508,3 +987,65 @@ where
     }
     Ok(())
 }
+
+/// Add directory to zip without following symlinks but preserving them
+fn add_dir_to_zip_no_follow<W>(
+    zip: &mut ZipWriter<W>,
+    src_dir: &Path,
+    dest_dir: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
+        let entry = entry?;
+        let path = entry.path();
+        let rel_path = path.strip_prefix(src_dir).unwrap();
+        let zip_path = dest_dir.join(rel_path);
+
+        if entry.file_type().is_dir() {
+            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            continue;
+        }
+
+        // Process regular files and symlinks, skip other special files
+        if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
+            continue;
+        }
+
+        // Get file permissions to preserve executable bits (Unix only)
+        let file_opts = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = entry.metadata()?;
+                let permissions = metadata.permissions();
+                let mode = permissions.mode();
+                opts.unix_permissions(mode)
+            }
+            #[cfg(not(unix))]
+            {
+                opts
+            }
+        };
+        
+        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
+        
+        if entry.file_type().is_symlink() {
+            // For symlinks, read the target and store it as file content
+            // This won't create actual symlinks but avoids infinite loops
+            if let Ok(target) = fs::read_link(path) {
+                let target_str = target.to_string_lossy();
+                zip.write_all(target_str.as_bytes())?;
+            }
+        } else {
+            // For regular files, read the content
+            let data = fs::read(path).context("Failed to read file while zipping")?;
+            zip.write_all(&data)?;
+        }
+    }
+    Ok(())
+}
+
+

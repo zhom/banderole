@@ -83,21 +83,6 @@ impl NodeDownloader {
             cache.insert(cache_key, node_executable.clone());
             return Ok(node_executable);
         }
-        
-        // Check disk cache
-        let node_dir = self.cache_dir
-            .join("node")
-            .join(&self.node_version)
-            .join(self.platform.to_string());
-            
-        let node_executable = node_dir.join(self.platform.node_executable_path());
-
-        if node_executable.exists() {
-            // Update in-memory cache
-            let mut cache = NODE_VERSION_CACHE.lock().map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
-            cache.insert(cache_key, node_executable.clone());
-            return Ok(node_executable);
-        }
 
         println!(
             "Downloading Node.js {} for {}...",

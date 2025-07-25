@@ -34,6 +34,7 @@ banderole bundle /path/to/project --output /path/to/my-app --name my-app
 - [x] Support custom node.js version based on project's `.nvmrc` and `.node-version`
 - [x] Support TypeScript projects with automatic detection of compiled output directories
 - [ ] Support workspaces (currently you need to install dependencies directly)
+- [ ] Only the executable has permissions to read and execute bundled files
 
 ## License
 
