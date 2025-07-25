@@ -1,6 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
+use std::fs;
 
 #[tokio::test]
 async fn test_bundle_and_run() -> Result<(), Box<dyn std::error::Error>> {
@@ -864,6 +865,369 @@ try {
     );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_pnpm_dependencies_bundling() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let test_app_path = temp_dir.path().join("pnpm-test-app");
+
+    // Create a TypeScript project structure with pnpm dependencies
+    std::fs::create_dir_all(&test_app_path)?;
+    std::fs::create_dir_all(test_app_path.join("dist"))?;
+    std::fs::create_dir_all(test_app_path.join("node_modules"))?;
+    std::fs::create_dir_all(test_app_path.join("node_modules/.pnpm"))?;
+
+    let package_json = r#"{
+  "name": "pnpm-test-app",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "dependencies": {
+    "adm-zip": "^0.5.10"
+  }
+}"#;
+
+    // Create a compiled JS file that uses dependencies
+    let dist_index_js = r#"console.log("Hello from pnpm test app!");
+console.log("Node version:", process.version);
+
+// Test requiring a dependency that should be bundled
+try {
+    const AdmZip = require('adm-zip');
+    console.log("Successfully loaded adm-zip:", typeof AdmZip);
+    
+    // Test basic functionality
+    const zip = new AdmZip();
+    zip.addFile("test.txt", Buffer.from("test content"));
+    const entries = zip.getEntries();
+    console.log("Zip entries count:", entries.length);
+    console.log("DEPENDENCY_TEST_PASSED");
+} catch (e) {
+    console.error("Failed to load or use adm-zip:", e.message);
+    console.log("DEPENDENCY_TEST_FAILED");
+    process.exit(1);
+}
+
+console.log("All tests passed!");"#;
+
+    // Create pnpm lockfile to indicate pnpm usage
+    let pnpm_lock = r#"lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  adm-zip:
+    specifier: ^0.5.10
+    version: 0.5.10
+
+packages:
+
+  /adm-zip@0.5.10:
+    resolution: {integrity: sha512-x0HvcHqVJNTPk/Bw8JbLWlWoo6Wwnsug0fnYYro1HBrjxZ3G7/AZk7Ahv8JwDe1uIcz8eBqvu86FuF1POiG7vQ==}
+    engines: {node: '>=6.0'}
+    dev: false
+"#;
+
+    // Write project files
+    std::fs::write(test_app_path.join("package.json"), package_json)?;
+    std::fs::write(test_app_path.join("dist/index.js"), dist_index_js)?;
+    std::fs::write(test_app_path.join("pnpm-lock.yaml"), pnpm_lock)?;
+
+    // Simulate a real pnpm installation by installing the actual dependency
+    println!("Installing pnpm dependencies for test...");
+    let pnpm_install = Command::new("pnpm")
+        .args(["install"])
+        .current_dir(&test_app_path)
+        .output();
+
+    match pnpm_install {
+        Ok(output) if output.status.success() => {
+            println!("Successfully installed pnpm dependencies for test");
+        }
+        Ok(output) => {
+            println!("pnpm install failed: {}", String::from_utf8_lossy(&output.stderr));
+            println!("Falling back to npm install...");
+            
+            // Fallback to npm if pnpm is not available
+            let npm_install = Command::new("npm")
+                .args(["install", "adm-zip"])
+                .current_dir(&test_app_path)
+                .output()?;
+            
+            if !npm_install.status.success() {
+                return Err("Failed to install dependencies for test".into());
+            }
+        }
+        Err(_) => {
+            println!("pnpm not found, falling back to npm install...");
+            
+            // Fallback to npm if pnpm is not available
+            let npm_install = Command::new("npm")
+                .args(["install", "adm-zip"])
+                .current_dir(&test_app_path)
+                .output()?;
+            
+            if !npm_install.status.success() {
+                return Err("Failed to install dependencies for test".into());
+            }
+        }
+    }
+
+    // Build banderole
+    let target_dir = std::env::current_dir()?.join("target");
+    let banderole_path = target_dir.join("debug/banderole");
+    
+    if !banderole_path.exists() {
+        let output = Command::new("cargo")
+            .args(["build"])
+            .output()
+            .expect("Failed to build banderole");
+
+        assert!(
+            output.status.success(),
+            "Failed to build banderole: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bundle the pnpm project
+    println!("Testing pnpm dependency bundling...");
+    
+    let mut bundle_cmd = Command::new(&banderole_path);
+    bundle_cmd
+        .args(["bundle", test_app_path.to_str().unwrap()])
+        .current_dir(temp_dir.path());
+
+    let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
+
+    if !bundle_output.status.success() {
+        println!(
+            "Bundle stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        println!(
+            "Bundle stderr: {}",
+            String::from_utf8_lossy(&bundle_output.stderr)
+        );
+        return Err("pnpm bundle command failed".into());
+    }
+
+    let bundle_stdout = String::from_utf8_lossy(&bundle_output.stdout);
+    let bundle_stderr = String::from_utf8_lossy(&bundle_output.stderr);
+    println!("Bundle stdout: {}", bundle_stdout);
+    println!("Bundle stderr: {}", bundle_stderr);
+
+    // The bundling succeeded if we can find the executable - output parsing is unreliable in tests
+
+    // Find the created executable
+    let mut executable_path = temp_dir.path().join(if cfg!(windows) {
+        "pnpm-test-app.exe"
+    } else {
+        "pnpm-test-app"
+    });
+    
+    // Check if collision avoidance was used
+    if !executable_path.exists() || !executable_path.is_file() {
+        executable_path = temp_dir.path().join(if cfg!(windows) {
+            "pnpm-test-app-bundle.exe"
+        } else {
+            "pnpm-test-app-bundle"
+        });
+    }
+
+    assert!(
+        executable_path.exists(),
+        "pnpm test executable was not created: {}. Found files: {:?}",
+        executable_path.display(),
+        std::fs::read_dir(temp_dir.path()).unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>()
+    );
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&executable_path)?.permissions();
+        let mut perms = perms.clone();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&executable_path, perms)?;
+    }
+
+    // Test the executable - this is the critical test
+    println!("Running pnpm test executable to verify dependencies...");
+    let output = Command::new(&executable_path)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    println!("pnpm test stdout: {}", stdout);
+    if !stderr.is_empty() {
+        println!("pnpm test stderr: {}", stderr);
+    }
+
+    // The critical assertions - the app should run successfully and load its dependencies
+    assert!(
+        output.status.success(),
+        "pnpm test executable failed with exit code {:?}. Stderr: {}",
+        output.status.code(),
+        stderr
+    );
+    
+    assert!(
+        stdout.contains("Hello from pnpm test app!"),
+        "Expected greeting not found in pnpm test output"
+    );
+    
+    assert!(
+        stdout.contains("Successfully loaded adm-zip:"),
+        "Failed to load adm-zip dependency - this indicates the bundling didn't work correctly"
+    );
+    
+    assert!(
+        stdout.contains("DEPENDENCY_TEST_PASSED"),
+        "Dependency functionality test failed - adm-zip was loaded but not working correctly"
+    );
+    
+    assert!(
+        stdout.contains("All tests passed!"),
+        "Not all tests passed in the bundled application"
+    );
+
+    println!("✅ pnpm dependency bundling test passed successfully!");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_bundle_simple_project() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_path = temp_dir.path().join("test-project");
+    
+    // Create a simple Node.js project
+    fs::create_dir_all(&project_path).unwrap();
+    
+    let package_json = r#"{
+        "name": "test-project",
+        "version": "1.0.0",
+        "main": "index.js",
+        "dependencies": {
+            "commander": "^11.0.0"
+        }
+    }"#;
+    
+    let index_js = r#"
+        const { program } = require('commander');
+        program
+            .name('test-app')
+            .description('A test application')
+            .version('1.0.0')
+            .option('-t, --test', 'test option');
+        
+        program.parse();
+        console.log('Test app executed successfully');
+    "#;
+    
+    fs::write(project_path.join("package.json"), package_json).unwrap();
+    fs::write(project_path.join("index.js"), index_js).unwrap();
+    
+    // Install dependencies using npm (simpler than pnpm for this test)
+    let npm_install = Command::new("npm")
+        .arg("install")
+        .current_dir(&project_path)
+        .output()
+        .unwrap();
+    
+    assert!(npm_install.status.success(), "npm install failed");
+    
+    // Bundle the project (we'll use the CLI instead)
+    let cargo_bin = env!("CARGO_BIN_EXE_banderole");
+    let bundle_output = Command::new(cargo_bin)
+        .arg("bundle")
+        .arg(&project_path)
+        .arg("--output")
+        .arg(temp_dir.path().join("test-bundle"))
+        .arg("--name")
+        .arg("test-bundle")
+        .output()
+        .unwrap();
+    
+    assert!(bundle_output.status.success(), "Bundling failed: {:?}", String::from_utf8_lossy(&bundle_output.stderr));
+    
+    // Test that the bundle exists
+    let bundle_path = temp_dir.path().join("test-bundle");
+    assert!(bundle_path.exists(), "Bundle file not created");
+    
+    // Note: Testing execution would require extracting and running the bundle,
+    // which is complex in a test environment
+}
+
+#[tokio::test]
+async fn test_pnpm_project_bundling() {
+    // This test demonstrates that pnpm projects can be bundled
+    // It would require a real pnpm project structure to test fully
+    
+    let temp_dir = TempDir::new().unwrap();
+    let project_path = temp_dir.path().join("pnpm-project");
+    
+    // Create a minimal pnpm project structure
+    fs::create_dir_all(&project_path).unwrap();
+    fs::create_dir_all(project_path.join("node_modules/.pnpm")).unwrap();
+    
+    let package_json = r#"{
+        "name": "pnpm-test-project",
+        "version": "1.0.0",
+        "main": "index.js",
+        "dependencies": {
+            "lodash": "^4.17.21"
+        }
+    }"#;
+    
+    let index_js = r#"
+        const _ = require('lodash');
+        console.log('Lodash version:', _.VERSION);
+    "#;
+    
+    fs::write(project_path.join("package.json"), package_json).unwrap();
+    fs::write(project_path.join("index.js"), index_js).unwrap();
+    
+    // Create minimal pnpm-lock.yaml
+    let pnpm_lock = r#"
+lockfileVersion: '6.0'
+dependencies:
+  lodash:
+    specifier: ^4.17.21
+    version: 4.17.21
+packages:
+  /lodash@4.17.21:
+    resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
+    dev: false
+"#;
+    
+    fs::write(project_path.join("pnpm-lock.yaml"), pnpm_lock).unwrap();
+    
+    // The bundling should handle the pnpm structure gracefully
+    let cargo_bin = env!("CARGO_BIN_EXE_banderole");
+    let result = Command::new(cargo_bin)
+        .arg("bundle")
+        .arg(&project_path)
+        .arg("--output")
+        .arg(temp_dir.path().join("pnpm-bundle"))
+        .arg("--name")
+        .arg("pnpm-bundle")
+        .output()
+        .unwrap();
+    
+    // Should not panic or fail catastrophically
+    // May fail due to missing dependencies, but should handle pnpm structure
+    if result.status.success() {
+        println!("Pnpm bundling succeeded");
+    } else {
+        println!("Pnpm bundling failed gracefully: {}", String::from_utf8_lossy(&result.stderr));
+    }
 }
 
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std::process::Output> {

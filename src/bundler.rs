@@ -70,8 +70,8 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(8));
 
-        // Copy the determined source directory
-        add_dir_to_zip(&mut zip, &source_dir, Path::new("app"), opts)?;
+        // Copy the determined source directory (excluding node_modules to avoid conflicts)
+        add_dir_to_zip_excluding_node_modules(&mut zip, &source_dir, Path::new("app"), opts)?;
         
         // Handle dependencies and package.json
         bundle_dependencies(&mut zip, &project_path, &source_dir, &package_value, opts)?;
@@ -329,6 +329,9 @@ where
 
     println!("Bundling {} packages (resolved dependencies) for pnpm project", resolved_packages.len());
 
+    // Ensure app/node_modules directory exists
+    zip.add_directory("app/node_modules/", opts)?;
+
     // Copy each resolved package
     for package_name in &resolved_packages {
         if let Err(e) = copy_pnpm_package_comprehensive(zip, &node_modules_path, &pnpm_dir, package_name, opts) {
@@ -538,7 +541,7 @@ where
         };
         
         if target_path.exists() {
-            add_dir_to_zip_no_follow(zip, &target_path, &dest_path, opts)?;
+            add_dir_to_zip_no_follow_skip_parents(zip, &target_path, &dest_path, opts)?;
             return Ok(());
         }
     }
@@ -553,7 +556,7 @@ where
             if extracted_name == package_name {
                 let pnpm_package_path = entry.path().join("node_modules").join(package_name);
                 if pnpm_package_path.exists() {
-                    add_dir_to_zip_no_follow(zip, &pnpm_package_path, &dest_path, opts)?;
+                    add_dir_to_zip_no_follow_skip_parents(zip, &pnpm_package_path, &dest_path, opts)?;
                     return Ok(());
                 }
             }
@@ -1044,6 +1047,123 @@ where
             let data = fs::read(path).context("Failed to read file while zipping")?;
             zip.write_all(&data)?;
         }
+    }
+    Ok(())
+}
+
+/// Add directory to zip without following symlinks and skipping parent directory creation
+fn add_dir_to_zip_no_follow_skip_parents<W>(
+    zip: &mut ZipWriter<W>,
+    src_dir: &Path,
+    dest_dir: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
+        let entry = entry?;
+        let path = entry.path();
+        let rel_path = path.strip_prefix(src_dir).unwrap();
+        let zip_path = dest_dir.join(rel_path);
+
+        if entry.file_type().is_dir() {
+            // Only create subdirectories within the package, not the main app/node_modules path
+            if !rel_path.as_os_str().is_empty() {
+                zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            }
+            continue;
+        }
+
+        // Process regular files and symlinks, skip other special files
+        if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
+            continue;
+        }
+
+        // Get file permissions to preserve executable bits (Unix only)
+        let file_opts = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = entry.metadata()?;
+                let permissions = metadata.permissions();
+                let mode = permissions.mode();
+                opts.unix_permissions(mode)
+            }
+            #[cfg(not(unix))]
+            {
+                opts
+            }
+        };
+        
+        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
+        
+        if entry.file_type().is_symlink() {
+            // For symlinks, read the target and store it as file content
+            // This won't create actual symlinks but avoids infinite loops
+            if let Ok(target) = fs::read_link(path) {
+                let target_str = target.to_string_lossy();
+                zip.write_all(target_str.as_bytes())?;
+            }
+        } else {
+            // For regular files, read the content
+            let data = fs::read(path).context("Failed to read file while zipping")?;
+            zip.write_all(&data)?;
+        }
+    }
+    Ok(())
+}
+
+/// Add directory to zip, excluding node_modules from the source directory
+fn add_dir_to_zip_excluding_node_modules<W>(
+    zip: &mut ZipWriter<W>,
+    src_dir: &Path,
+    dest_dir: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(true) {
+        let entry = entry?;
+        let path = entry.path();
+        let rel_path = path.strip_prefix(src_dir).unwrap();
+        let zip_path = dest_dir.join(rel_path);
+
+        // Exclude node_modules from the source directory
+        if rel_path.starts_with("node_modules") {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            continue;
+        }
+
+        // Process regular files and symlinks, skip other special files
+        if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
+            continue;
+        }
+
+        // Get file permissions to preserve executable bits (Unix only)
+        let file_opts = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = fs::metadata(path)?;
+                let permissions = metadata.permissions();
+                let mode = permissions.mode();
+                opts.unix_permissions(mode)
+            }
+            #[cfg(not(unix))]
+            {
+                opts
+            }
+        };
+        
+        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
+        let data = fs::read(path).context("Failed to read file while zipping")?;
+        zip.write_all(&data)?;
     }
     Ok(())
 }
