@@ -1,0 +1,675 @@
+use std::process::Command;
+use std::time::Duration;
+use tempfile::TempDir;
+use std::fs;
+use std::path::{Path, PathBuf};
+use anyhow::Result;
+
+/// Represents different project types for testing
+#[derive(Debug, Clone)]
+pub enum ProjectType {
+    Simple,
+    TypeScript { out_dir: String },
+    Workspace,
+    PnpmWorkspace,
+}
+
+/// Represents a test project configuration
+#[derive(Debug, Clone)]
+pub struct TestProject {
+    pub name: String,
+    pub project_type: ProjectType,
+    pub dependencies: Vec<(String, String)>, // (name, version)
+    pub dev_dependencies: Vec<(String, String)>,
+    pub has_nvmrc: Option<String>,
+    pub has_node_version: Option<String>,
+}
+
+impl Default for TestProject {
+    fn default() -> Self {
+        Self {
+            name: "test-project".to_string(),
+            project_type: ProjectType::Simple,
+            dependencies: vec![],
+            dev_dependencies: vec![],
+            has_nvmrc: None,
+            has_node_version: None,
+        }
+    }
+}
+
+impl TestProject {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_dependency(mut self, name: &str, version: &str) -> Self {
+        self.dependencies.push((name.to_string(), version.to_string()));
+        self
+    }
+
+    pub fn with_dev_dependency(mut self, name: &str, version: &str) -> Self {
+        self.dev_dependencies.push((name.to_string(), version.to_string()));
+        self
+    }
+
+    pub fn with_nvmrc(mut self, version: &str) -> Self {
+        self.has_nvmrc = Some(version.to_string());
+        self
+    }
+
+    pub fn with_node_version(mut self, version: &str) -> Self {
+        self.has_node_version = Some(version.to_string());
+        self
+    }
+
+    pub fn typescript(mut self, out_dir: &str) -> Self {
+        self.project_type = ProjectType::TypeScript { out_dir: out_dir.to_string() };
+        self
+    }
+
+    pub fn workspace(mut self) -> Self {
+        self.project_type = ProjectType::Workspace;
+        self
+    }
+
+    pub fn pnpm_workspace(mut self) -> Self {
+        self.project_type = ProjectType::PnpmWorkspace;
+        self
+    }
+}
+
+/// Test project manager for creating and managing test projects
+pub struct TestProjectManager {
+    temp_dir: TempDir,
+    project_path: PathBuf,
+    workspace_root: Option<PathBuf>,
+}
+
+impl TestProjectManager {
+    /// Create a new test project in a temporary directory
+    pub fn create(config: TestProject) -> Result<Self> {
+        let temp_dir = TempDir::new()?;
+        let mut manager = Self {
+            temp_dir,
+            project_path: PathBuf::new(),
+            workspace_root: None,
+        };
+
+        match config.project_type {
+            ProjectType::Simple => {
+                manager.project_path = manager.temp_dir.path().join(&config.name);
+                manager.create_simple_project(&config)?;
+            }
+            ProjectType::TypeScript { ref out_dir } => {
+                manager.project_path = manager.temp_dir.path().join(&config.name);
+                manager.create_typescript_project(&config, out_dir)?;
+            }
+            ProjectType::Workspace => {
+                manager.workspace_root = Some(manager.temp_dir.path().join("workspace"));
+                manager.project_path = manager.workspace_root.as_ref().unwrap().join(&config.name);
+                manager.create_workspace_project(&config)?;
+            }
+            ProjectType::PnpmWorkspace => {
+                manager.workspace_root = Some(manager.temp_dir.path().join("workspace"));
+                manager.project_path = manager.workspace_root.as_ref().unwrap().join(&config.name);
+                manager.create_pnpm_workspace_project(&config)?;
+            }
+        }
+
+        Ok(manager)
+    }
+
+    /// Get the path to the project being tested
+    pub fn project_path(&self) -> &Path {
+        &self.project_path
+    }
+
+    /// Get the path to the workspace root (if this is a workspace project)
+    pub fn workspace_root(&self) -> Option<&Path> {
+        self.workspace_root.as_deref()
+    }
+
+    /// Get the temporary directory path
+    pub fn temp_dir(&self) -> &Path {
+        self.temp_dir.path()
+    }
+
+    /// Install dependencies using npm
+    pub fn install_dependencies(&self) -> Result<()> {
+        let npm_install = Command::new("npm")
+            .args(["install"])
+            .current_dir(&self.project_path)
+            .output()?;
+
+        if !npm_install.status.success() {
+            anyhow::bail!(
+                "npm install failed: {}",
+                String::from_utf8_lossy(&npm_install.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Install dependencies using pnpm
+    pub fn install_pnpm_dependencies(&self) -> Result<()> {
+        // First try pnpm
+        let pnpm_install = Command::new("pnpm")
+            .args(["install"])
+            .current_dir(self.workspace_root.as_ref().unwrap_or(&self.project_path))
+            .output();
+
+        match pnpm_install {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                anyhow::bail!(
+                    "pnpm install failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(_) => {
+                // Fallback to npm if pnpm is not available
+                println!("pnpm not found, falling back to npm");
+                self.install_dependencies()
+            }
+        }
+    }
+
+    /// Install dependencies in workspace root
+    pub fn install_workspace_dependencies(&self) -> Result<()> {
+        if let Some(workspace_root) = &self.workspace_root {
+            let npm_install = Command::new("npm")
+                .args(["install"])
+                .current_dir(workspace_root)
+                .output()?;
+
+            if !npm_install.status.success() {
+                anyhow::bail!(
+                    "npm install failed in workspace root: {}",
+                    String::from_utf8_lossy(&npm_install.stderr)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn create_simple_project(&self, config: &TestProject) -> Result<()> {
+        fs::create_dir_all(&self.project_path)?;
+
+        let package_json = self.generate_package_json(config)?;
+        fs::write(self.project_path.join("package.json"), package_json)?;
+
+        let index_js = r#"console.log("Hello from test project!");
+console.log("Node version:", process.version);
+console.log("Platform:", process.platform);
+console.log("Architecture:", process.arch);
+
+// Test environment variables
+console.log("Test env var:", process.env.TEST_VAR || 'not set');
+
+// Test process arguments
+console.log("Process args:", process.argv.slice(2));
+
+// Test dependencies if any
+try {
+    const deps = require('./package.json').dependencies || {};
+    console.log("Dependencies:", Object.keys(deps));
+    
+    // Test specific commonly used dependencies
+    if (deps['adm-zip']) {
+        const AdmZip = require('adm-zip');
+        console.log("Successfully loaded adm-zip:", typeof AdmZip);
+        
+        // Test basic functionality
+        const zip = new AdmZip();
+        zip.addFile("test.txt", Buffer.from("test content"));
+        const entries = zip.getEntries();
+        console.log("Zip entries count:", entries.length);
+        console.log("DEPENDENCY_TEST_PASSED");
+    }
+} catch (e) {
+    console.error("Dependency test failed:", e.message);
+    console.log("DEPENDENCY_TEST_FAILED");
+}
+
+console.log("All tests completed!");
+process.exit(0);"#;
+
+        fs::write(self.project_path.join("index.js"), index_js)?;
+
+        // Add Node version files if specified
+        if let Some(ref version) = config.has_nvmrc {
+            fs::write(self.project_path.join(".nvmrc"), version)?;
+        }
+        if let Some(ref version) = config.has_node_version {
+            fs::write(self.project_path.join(".node-version"), version)?;
+        }
+
+        Ok(())
+    }
+
+    fn create_typescript_project(&self, config: &TestProject, out_dir: &str) -> Result<()> {
+        fs::create_dir_all(&self.project_path)?;
+        fs::create_dir_all(self.project_path.join(out_dir))?;
+
+        let mut package_json = self.generate_package_json(config)?;
+        // Update main to point to compiled output
+        let mut package_obj: serde_json::Value = serde_json::from_str(&package_json)?;
+        package_obj["main"] = serde_json::Value::String(format!("{}/index.js", out_dir));
+        package_json = serde_json::to_string_pretty(&package_obj)?;
+
+        fs::write(self.project_path.join("package.json"), package_json)?;
+
+        let tsconfig_json = format!(r#"{{
+  "compilerOptions": {{
+    "target": "ES2020",
+    "module": "commonjs",
+    "outDir": "./{out_dir}",
+    "rootDir": "./src",
+    "strict": true
+  }}
+}}"#);
+
+        fs::write(self.project_path.join("tsconfig.json"), tsconfig_json)?;
+
+        // Create source TypeScript file
+        fs::create_dir_all(self.project_path.join("src"))?;
+        let src_index_ts = r#"console.log("Hello from TypeScript project!");
+console.log("Node version:", process.version);
+console.log("This should come from the compiled output directory");
+try {
+    const marker = require('./marker.js');
+    console.log("Marker file found:", marker.source);
+} catch (e) {
+    console.log("Marker file not found");
+}"#;
+
+        fs::write(self.project_path.join("src/index.ts"), src_index_ts)?;
+
+        // Create compiled output
+        let compiled_index_js = r#"console.log("Hello from TypeScript project!");
+console.log("Node version:", process.version);
+console.log("This should come from the compiled output directory");
+try {
+    const marker = require('./marker.js');
+    console.log("Marker file found:", marker.source);
+} catch (e) {
+    console.log("Marker file not found");
+}"#;
+
+        fs::write(self.project_path.join(out_dir).join("index.js"), compiled_index_js)?;
+
+        // Create a marker file to verify correct source directory is used
+        let marker_js = format!(r#"module.exports = {{ source: "{}" }};"#, out_dir);
+        fs::write(self.project_path.join(out_dir).join("marker.js"), marker_js)?;
+
+        Ok(())
+    }
+
+    fn create_workspace_project(&self, config: &TestProject) -> Result<()> {
+        let workspace_root = self.workspace_root.as_ref().unwrap();
+        fs::create_dir_all(workspace_root)?;
+        fs::create_dir_all(&self.project_path)?;
+
+        // Create workspace root package.json
+        let workspace_package_json = format!(r#"{{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "{}"
+  ],
+  "dependencies": {{
+{}
+  }}
+}}"#, config.name, self.format_dependencies(&config.dependencies));
+
+        fs::write(workspace_root.join("package.json"), workspace_package_json)?;
+
+        // Create project package.json
+        let project_package_json = self.generate_package_json(config)?;
+        fs::write(self.project_path.join("package.json"), project_package_json)?;
+
+        // Create project files
+        let index_js = r#"console.log("Hello from workspace project!");
+console.log("Node version:", process.version);
+
+// Test workspace dependencies
+try {
+    const deps = require('./package.json').dependencies || {};
+    console.log("Dependencies:", Object.keys(deps));
+    
+    // Test specific dependencies
+    if (deps['adm-zip']) {
+        const AdmZip = require('adm-zip');
+        console.log("Successfully loaded adm-zip from workspace:", typeof AdmZip);
+        
+        // Test basic functionality
+        const zip = new AdmZip();
+        zip.addFile("test.txt", Buffer.from("workspace test content"));
+        const entries = zip.getEntries();
+        console.log("Zip entries count:", entries.length);
+        console.log("WORKSPACE_DEPENDENCY_TEST_PASSED");
+    }
+} catch (e) {
+    console.error("Workspace dependency test failed:", e.message);
+    console.log("WORKSPACE_DEPENDENCY_TEST_FAILED");
+}
+
+console.log("Workspace project test completed!");
+process.exit(0);"#;
+
+        fs::write(self.project_path.join("index.js"), index_js)?;
+
+        Ok(())
+    }
+
+    fn create_pnpm_workspace_project(&self, config: &TestProject) -> Result<()> {
+        let workspace_root = self.workspace_root.as_ref().unwrap();
+        fs::create_dir_all(workspace_root)?;
+        fs::create_dir_all(&self.project_path)?;
+
+        // Create pnpm-workspace.yaml
+        let pnpm_workspace = format!(r#"packages:
+  - '{}'
+"#, config.name);
+
+        fs::write(workspace_root.join("pnpm-workspace.yaml"), pnpm_workspace)?;
+
+        // Create workspace root package.json
+        let workspace_package_json = format!(r#"{{
+  "name": "test-pnpm-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {{
+{}
+  }}
+}}"#, self.format_dependencies(&config.dependencies));
+
+        fs::write(workspace_root.join("package.json"), workspace_package_json)?;
+
+        // Create project package.json
+        let project_package_json = self.generate_package_json(config)?;
+        fs::write(self.project_path.join("package.json"), project_package_json)?;
+
+        // Create project files (similar to workspace but with pnpm-specific messaging)
+        let index_js = r#"console.log("Hello from pnpm workspace project!");
+console.log("Node version:", process.version);
+
+// Test pnpm workspace dependencies
+try {
+    const deps = require('./package.json').dependencies || {};
+    console.log("Dependencies:", Object.keys(deps));
+    
+    // Test specific dependencies
+    if (deps['adm-zip']) {
+        const AdmZip = require('adm-zip');
+        console.log("Successfully loaded adm-zip from pnpm workspace:", typeof AdmZip);
+        
+        // Test basic functionality
+        const zip = new AdmZip();
+        zip.addFile("test.txt", Buffer.from("pnpm workspace test content"));
+        const entries = zip.getEntries();
+        console.log("Zip entries count:", entries.length);
+        console.log("PNPM_WORKSPACE_DEPENDENCY_TEST_PASSED");
+    }
+} catch (e) {
+    console.error("Pnpm workspace dependency test failed:", e.message);
+    console.log("PNPM_WORKSPACE_DEPENDENCY_TEST_FAILED");
+}
+
+console.log("Pnpm workspace project test completed!");
+process.exit(0);"#;
+
+        fs::write(self.project_path.join("index.js"), index_js)?;
+
+        Ok(())
+    }
+
+    fn generate_package_json(&self, config: &TestProject) -> Result<String> {
+        let deps = self.format_dependencies(&config.dependencies);
+        let dev_deps = self.format_dependencies(&config.dev_dependencies);
+
+        let package_json = format!(r#"{{
+  "name": "{}",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {{
+    "start": "node index.js"
+  }}{}{}
+}}"#,
+            config.name,
+            if deps.is_empty() { String::new() } else { format!(",\n  \"dependencies\": {{\n{}\n  }}", deps) },
+            if dev_deps.is_empty() { String::new() } else { format!(",\n  \"devDependencies\": {{\n{}\n  }}", dev_deps) }
+        );
+
+        Ok(package_json)
+    }
+
+    fn format_dependencies(&self, deps: &[(String, String)]) -> String {
+        deps.iter()
+            .map(|(name, version)| format!("    \"{}\": \"{}\"", name, version))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    }
+}
+
+/// Bundler test helper for running the bundler in tests
+pub struct BundlerTestHelper;
+
+impl BundlerTestHelper {
+    /// Get the path to the banderole binary
+    pub fn get_bundler_path() -> Result<PathBuf> {
+        let target_dir = std::env::current_dir()?.join("target");
+        let bundler_path = target_dir.join("debug/banderole");
+        
+        if !bundler_path.exists() {
+            // Build the bundler if it doesn't exist
+            println!("Building banderole...");
+            let output = Command::new("cargo")
+                .args(["build"])
+                .output()?;
+
+            if !output.status.success() {
+                anyhow::bail!(
+                    "Failed to build banderole: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        Ok(bundler_path)
+    }
+
+    /// Bundle a project and return the path to the created executable
+    pub fn bundle_project(
+        project_path: &Path,
+        output_dir: &Path,
+        custom_name: Option<&str>,
+    ) -> Result<PathBuf> {
+        let bundler_path = Self::get_bundler_path()?;
+        
+        let mut cmd = Command::new(&bundler_path);
+        cmd.args(["bundle", project_path.to_str().unwrap()])
+            .current_dir(output_dir);
+
+        if let Some(name) = custom_name {
+            cmd.args(["--name", name]);
+        }
+
+        let bundle_output = Self::run_with_timeout(&mut cmd, Duration::from_secs(300))?;
+
+        if !bundle_output.status.success() {
+            anyhow::bail!(
+                "Bundle command failed:\nStdout: {}\nStderr: {}",
+                String::from_utf8_lossy(&bundle_output.stdout),
+                String::from_utf8_lossy(&bundle_output.stderr)
+            );
+        }
+
+        // Find the created executable
+        let executable_name = custom_name.unwrap_or("test-project");
+        let executable_path = output_dir.join(if cfg!(windows) {
+            format!("{}.exe", executable_name)
+        } else {
+            executable_name.to_string()
+        });
+
+        // Check if collision avoidance was used
+        if !executable_path.exists() || !executable_path.is_file() {
+            let bundle_executable_path = output_dir.join(if cfg!(windows) {
+                format!("{}-bundle.exe", executable_name)
+            } else {
+                format!("{}-bundle", executable_name)
+            });
+            
+            if bundle_executable_path.exists() {
+                return Ok(bundle_executable_path);
+            }
+        }
+
+        if !executable_path.exists() {
+            anyhow::bail!("Executable was not created at {}", executable_path.display());
+        }
+
+        Ok(executable_path)
+    }
+
+    /// Run an executable and return the output
+    pub fn run_executable(
+        executable_path: &Path,
+        args: &[&str],
+        env_vars: &[(&str, &str)],
+    ) -> Result<std::process::Output> {
+        // Make executable on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::metadata(executable_path)?.permissions();
+            let mut perms = perms.clone();
+            perms.set_mode(0o755);
+            fs::set_permissions(executable_path, perms)?;
+        }
+
+        let mut cmd = Command::new(executable_path);
+        cmd.args(args);
+        
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
+
+        let output = cmd.output()?;
+        Ok(output)
+    }
+
+    /// Run a command with a timeout
+    pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output> {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let child = cmd.spawn()?;
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn a thread to wait for the process
+        let child_id = child.id();
+        thread::spawn(move || {
+            let result = child.wait_with_output();
+            let _ = tx.send(result);
+        });
+
+        // Wait for either completion or timeout
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result.map_err(|e| anyhow::anyhow!("Command execution failed: {}", e)),
+            Err(_) => {
+                // Timeout occurred, kill the process
+                #[cfg(unix)]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(&["-9", &child_id.to_string()])
+                        .output();
+                }
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(&["/F", "/PID", &child_id.to_string()])
+                        .output();
+                }
+
+                anyhow::bail!("Command timed out after {:?}", timeout)
+            }
+        }
+    }
+}
+
+/// Assertion helpers for test verification
+pub struct TestAssertions;
+
+impl TestAssertions {
+    /// Assert that the bundled executable runs successfully and produces expected output
+    pub fn assert_executable_works(
+        executable_path: &Path,
+        expected_outputs: &[&str],
+        env_vars: &[(&str, &str)],
+        args: &[&str],
+    ) -> Result<()> {
+        let output = BundlerTestHelper::run_executable(executable_path, args, env_vars)?;
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Executable failed with exit code {:?}.\nStdout: {}\nStderr: {}",
+                output.status.code(),
+                stdout,
+                stderr
+            );
+        }
+
+        for expected in expected_outputs {
+            if !stdout.contains(expected) {
+                anyhow::bail!(
+                    "Expected output '{}' not found in stdout:\n{}",
+                    expected,
+                    stdout
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Assert that dependency tests pass in the bundled executable
+    pub fn assert_dependency_test_passes(
+        executable_path: &Path,
+        test_marker: &str,
+    ) -> Result<()> {
+        let output = BundlerTestHelper::run_executable(executable_path, &[], &[])?;
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Dependency test executable failed with exit code {:?}.\nStdout: {}\nStderr: {}",
+                output.status.code(),
+                stdout,
+                stderr
+            );
+        }
+
+        if !stdout.contains(test_marker) {
+            anyhow::bail!(
+                "Dependency test failed - marker '{}' not found in output:\n{}",
+                test_marker,
+                stdout
+            );
+        }
+
+        Ok(())
+    }
+} 

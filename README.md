@@ -4,7 +4,7 @@ Create cross-platform single-executables for Node.js projects.
 
 Banderole bundles your Node.js app, all dependencies, and a portable Node binary into a single executable. On first launch, it unpacks to a cache directory for fast subsequent executions.
 
-Unlike [Node.js SEA](https://nodejs.org/api/single-executable-applications.html) or [pkg](https://github.com/yao-pkg/pkg), banderole handles complex projects with dynamic imports and non-JavaScript files without requiring patches, but since it includes all dependencies by default, it has significantly large filesize.
+Unlike [Node.js SEA](https://nodejs.org/api/single-executable-applications.html) or [pkg](https://github.com/yao-pkg/pkg), banderole handles complex projects with dynamic imports and non-JavaScript files without requiring patches, but since it includes all dependencies by default, it has significantly larger filesize.
 
 ## Installation
 
@@ -33,7 +33,7 @@ banderole bundle /path/to/project --output /path/to/my-app --name my-app
 - [x] Support Linux, MacOS, and Windows for both x64 and arm64 architectures.
 - [x] Support custom node.js version based on project's `.nvmrc` and `.node-version`
 - [x] Support TypeScript projects with automatic detection of compiled output directories
-- [ ] Support workspaces (currently you need to install dependencies directly)
+- [x] Support workspaces (only pnpm workspaces tested)
 - [ ] Only the executable has permissions to read and execute bundled files
 
 ## License

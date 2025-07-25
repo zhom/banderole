@@ -163,33 +163,59 @@ where
     if project_node_modules.exists() {
         let package_manager = detect_package_manager(&project_node_modules, project_path);
         
-        match package_manager {
-            PackageManager::Pnpm => {
-                // For pnpm, we need to bundle both node_modules and .pnpm if it exists
-                bundle_pnpm_dependencies(zip, project_path, opts)?;
-                return Ok(DependenciesResult {
-                    dependencies_found: true,
-                    source_description: "pnpm dependencies (node_modules + .pnpm)".to_string(),
-                    warnings,
-                });
+        // Check if this is a pnpm workspace (symlinks to parent .pnpm)
+        let is_pnpm_workspace = if package_manager == PackageManager::Pnpm {
+            // Check if the pnpm structure points to a parent directory
+            if let Ok(entries) = fs::read_dir(&project_node_modules) {
+                entries.flatten().any(|entry| {
+                    if entry.file_type().ok().map_or(false, |ft| ft.is_symlink()) {
+                        if let Ok(target) = fs::read_link(entry.path()) {
+                            let target_str = target.to_string_lossy();
+                            target_str.contains("/.pnpm/") && target_str.starts_with("../")
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
             }
-            PackageManager::Yarn => {
-                // For yarn, bundle node_modules with improved symlink resolution
-                bundle_node_modules_with_symlink_resolution(zip, &project_node_modules, opts)?;
-                return Ok(DependenciesResult {
-                    dependencies_found: true,
-                    source_description: "yarn dependencies (node_modules)".to_string(),
-                    warnings,
-                });
-            }
-            PackageManager::Npm | PackageManager::Unknown => {
-                // For npm or unknown, use standard bundling with improved symlink handling
-                bundle_node_modules_with_symlink_resolution(zip, &project_node_modules, opts)?;
-                return Ok(DependenciesResult {
-                    dependencies_found: true,
-                    source_description: "npm dependencies (node_modules)".to_string(),
-                    warnings,
-                });
+        } else {
+            false
+        };
+        
+        // If it's a pnpm workspace, skip local bundling and go to workspace detection
+        if !is_pnpm_workspace {
+            match package_manager {
+                PackageManager::Pnpm => {
+                    // For local pnpm, bundle both node_modules and .pnpm if it exists
+                    bundle_pnpm_dependencies(zip, project_path, opts)?;
+                    return Ok(DependenciesResult {
+                        dependencies_found: true,
+                        source_description: "pnpm dependencies (node_modules + .pnpm)".to_string(),
+                        warnings,
+                    });
+                }
+                PackageManager::Yarn => {
+                    // For yarn, bundle node_modules with comprehensive dependency resolution
+                    bundle_node_modules_comprehensive(zip, &project_node_modules, project_path, opts)?;
+                    return Ok(DependenciesResult {
+                        dependencies_found: true,
+                        source_description: "yarn dependencies (node_modules)".to_string(),
+                        warnings,
+                    });
+                }
+                PackageManager::Npm | PackageManager::Unknown => {
+                    // For npm or unknown, use comprehensive bundling
+                    bundle_node_modules_comprehensive(zip, &project_node_modules, project_path, opts)?;
+                    return Ok(DependenciesResult {
+                        dependencies_found: true,
+                        source_description: "npm dependencies (node_modules)".to_string(),
+                        warnings,
+                    });
+                }
             }
         }
     }
@@ -202,31 +228,44 @@ where
         
         if parent_node_modules.exists() && parent_package_json.exists() {
             // Check if this is a workspace root
+            let mut is_workspace = false;
+            
+            // Check package.json for workspace configuration
             if let Ok(content) = fs::read_to_string(&parent_package_json) {
                 if let Ok(pkg_value) = serde_json::from_str::<Value>(&content) {
-                    if pkg_value["workspaces"].is_array() || pkg_value["workspaces"]["packages"].is_array() {
-                        warnings.push(format!("Found workspace dependencies in parent directory: {}", parent_path.display()));
-                        
-                        let package_manager = detect_package_manager(&parent_node_modules, parent_path);
-                        
-                        match package_manager {
-                            PackageManager::Pnpm => {
-                                bundle_pnpm_dependencies(zip, parent_path, opts)?;
-                                return Ok(DependenciesResult {
-                                    dependencies_found: true,
-                                    source_description: format!("workspace pnpm dependencies from {}", parent_path.display()),
-                                    warnings,
-                                });
-                            }
-                            _ => {
-                                bundle_node_modules_with_symlink_resolution(zip, &parent_node_modules, opts)?;
-                                return Ok(DependenciesResult {
-                                    dependencies_found: true,
-                                    source_description: format!("workspace dependencies from {}", parent_path.display()),
-                                    warnings,
-                                });
-                            }
-                        }
+                    is_workspace = pkg_value["workspaces"].is_array() 
+                        || pkg_value["workspaces"]["packages"].is_array()
+                        || pkg_value["workspaces"].is_object();
+                }
+            }
+            
+            // Check for pnpm-workspace.yaml
+            let pnpm_workspace_yaml = parent_path.join("pnpm-workspace.yaml");
+            if !is_workspace && pnpm_workspace_yaml.exists() {
+                is_workspace = true;
+            }
+            
+            if is_workspace {
+                warnings.push(format!("Found workspace dependencies in parent directory: {}", parent_path.display()));
+                
+                let package_manager = detect_package_manager(&parent_node_modules, parent_path);
+                
+                match package_manager {
+                    PackageManager::Pnpm => {
+                        bundle_pnpm_workspace_dependencies(zip, parent_path, project_path, opts)?;
+                        return Ok(DependenciesResult {
+                            dependencies_found: true,
+                            source_description: format!("workspace pnpm dependencies from {}", parent_path.display()),
+                            warnings,
+                        });
+                    }
+                    _ => {
+                        bundle_workspace_dependencies(zip, &parent_node_modules, parent_path, project_path, opts)?;
+                        return Ok(DependenciesResult {
+                            dependencies_found: true,
+                            source_description: format!("workspace dependencies from {}", parent_path.display()),
+                            warnings,
+                        });
                     }
                 }
             }
@@ -260,6 +299,22 @@ fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> Pack
     // Check for pnpm-specific structure
     if node_modules_path.join(".pnpm").exists() {
         return PackageManager::Pnpm;
+    }
+    
+    // Check if this is a pnpm workspace (symlinks pointing to parent .pnpm)
+    if node_modules_path.exists() {
+        if let Ok(entries) = fs::read_dir(node_modules_path) {
+            for entry in entries.flatten() {
+                if entry.file_type().ok().map_or(false, |ft| ft.is_symlink()) {
+                    if let Ok(target) = fs::read_link(entry.path()) {
+                        let target_str = target.to_string_lossy();
+                        if target_str.contains("/.pnpm/") {
+                            return PackageManager::Pnpm;
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // Check for lockfiles in the project directory
@@ -566,16 +621,273 @@ where
     Ok(())
 }
 
-/// Bundle node_modules with improved symlink resolution
-fn bundle_node_modules_with_symlink_resolution<W>(
+
+
+/// Bundle node_modules with comprehensive dependency resolution
+fn bundle_node_modules_comprehensive<W>(
     zip: &mut ZipWriter<W>,
     node_modules_path: &Path,
+    project_path: &Path,
     opts: zip::write::FileOptions<'static, ()>,
 ) -> Result<()>
 where
     W: Write + Read + std::io::Seek,
 {
-    add_dir_to_zip(zip, node_modules_path, Path::new("app/node_modules"), opts)
+    let mut packages_to_bundle = std::collections::HashSet::new();
+
+    // Start with direct dependencies from package.json
+    let package_json_path = project_path.join("package.json");
+    if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
+        if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+            if let Some(deps) = package_json["dependencies"].as_object() {
+                for dep_name in deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            // Also include peerDependencies and optionalDependencies
+            if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
+                for dep_name in peer_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
+                for dep_name in optional_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+        }
+    }
+
+    // Check if this is a pnpm setup
+    let pnpm_dir = node_modules_path.join(".pnpm");
+    if pnpm_dir.exists() {
+        // Use pnpm-specific resolution
+        let mut resolved_packages = std::collections::HashSet::new();
+        for package_name in &packages_to_bundle {
+            resolve_package_dependencies(
+                node_modules_path,
+                &pnpm_dir,
+                package_name,
+                &mut resolved_packages,
+                0,
+            )?;
+        }
+
+        println!("Bundling {} packages (resolved dependencies) for pnpm node_modules", resolved_packages.len());
+
+        // Ensure app/node_modules directory exists
+        zip.add_directory("app/node_modules/", opts)?;
+
+        // Copy each resolved package using pnpm logic
+        for package_name in &resolved_packages {
+            if let Err(e) = copy_pnpm_package_comprehensive(zip, node_modules_path, &pnpm_dir, package_name, opts) {
+                println!("Warning: Failed to copy package {}: {}", package_name, e);
+            }
+        }
+    } else {
+        // Use regular workspace resolution for non-pnpm setups
+        let mut resolved_packages = std::collections::HashSet::new();
+        for package_name in &packages_to_bundle {
+            resolve_workspace_dependencies(
+                node_modules_path,
+                package_name,
+                &mut resolved_packages,
+                0,
+            )?;
+        }
+
+        println!("Bundling {} packages (resolved dependencies) for regular node_modules", resolved_packages.len());
+
+        // Ensure app/node_modules directory exists
+        zip.add_directory("app/node_modules/", opts)?;
+
+        // Copy each resolved package using workspace logic
+        for package_name in &resolved_packages {
+            if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
+                println!("Warning: Failed to copy package {}: {}", package_name, e);
+            }
+        }
+    }
+
+    // Copy .bin directory if it exists
+    let bin_dir = node_modules_path.join(".bin");
+    if bin_dir.exists() {
+        add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
+    }
+
+    // Copy important metadata files
+    let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
+    for file_name in important_files {
+        let file_path = node_modules_path.join(file_name);
+        if file_path.exists() {
+            let dest_path = Path::new("app/node_modules").join(file_name);
+            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            let data = fs::read(&file_path)?;
+            zip.write_all(&data)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Bundle workspace dependencies (node_modules from parent)
+fn bundle_workspace_dependencies<W>(
+    zip: &mut ZipWriter<W>,
+    node_modules_path: &Path,
+    _parent_path: &Path,
+    project_path: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let mut packages_to_bundle = std::collections::HashSet::new();
+
+    // Read dependencies from the ACTUAL PROJECT being bundled, not the workspace root
+    let package_json_path = project_path.join("package.json");
+    if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
+        if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+            if let Some(deps) = package_json["dependencies"].as_object() {
+                for dep_name in deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            // Also include peerDependencies and optionalDependencies
+            if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
+                for dep_name in peer_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
+                for dep_name in optional_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+        }
+    }
+
+    // Recursively resolve dependencies for each package using workspace-specific logic
+    let mut resolved_packages = std::collections::HashSet::new();
+    for package_name in &packages_to_bundle {
+        resolve_workspace_dependencies(
+            node_modules_path,
+            package_name,
+            &mut resolved_packages,
+            0, // depth
+        )?;
+    }
+
+    println!("Bundling {} packages (resolved dependencies) for workspace node_modules", resolved_packages.len());
+
+    // Ensure app/node_modules directory exists
+    zip.add_directory("app/node_modules/", opts)?;
+
+    // Copy each resolved package using workspace-specific copying
+    for package_name in &resolved_packages {
+        if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
+            println!("Warning: Failed to copy package {}: {}", package_name, e);
+        }
+    }
+
+    // Copy .bin directory if it exists
+    let bin_dir = node_modules_path.join(".bin");
+    if bin_dir.exists() {
+        add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
+    }
+
+    // Copy important workspace metadata files if they exist
+    let important_files = [".modules.yaml"];
+    for file_name in important_files {
+        let file_path = node_modules_path.join(file_name);
+        if file_path.exists() {
+            let dest_path = Path::new("app/node_modules").join(file_name);
+            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            let data = fs::read(&file_path)?;
+            zip.write_all(&data)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Bundle pnpm workspace dependencies (node_modules from parent)
+fn bundle_pnpm_workspace_dependencies<W>(
+    zip: &mut ZipWriter<W>,
+    parent_path: &Path,
+    project_path: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let mut packages_to_bundle = std::collections::HashSet::new();
+
+    // Read dependencies from the ACTUAL PROJECT being bundled, not the workspace root
+    let package_json_path = project_path.join("package.json");
+    if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
+        if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+            if let Some(deps) = package_json["dependencies"].as_object() {
+                for dep_name in deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            // Also include peerDependencies and optionalDependencies
+            if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
+                for dep_name in peer_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+            if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
+                for dep_name in optional_deps.keys() {
+                    packages_to_bundle.insert(dep_name.clone());
+                }
+            }
+        }
+    }
+
+    // Recursively resolve dependencies for each package using pnpm-specific logic
+    let mut resolved_packages = std::collections::HashSet::new();
+    for package_name in &packages_to_bundle {
+        resolve_package_dependencies(
+            &parent_path.join("node_modules"),
+            &parent_path.join("node_modules").join(".pnpm"),
+            package_name,
+            &mut resolved_packages,
+            0, // depth
+        )?;
+    }
+
+    println!("Bundling {} packages (resolved dependencies) for workspace pnpm node_modules", resolved_packages.len());
+
+    // Ensure app/node_modules directory exists
+    zip.add_directory("app/node_modules/", opts)?;
+
+    // Copy each resolved package using pnpm-specific copying
+    for package_name in &resolved_packages {
+        if let Err(e) = copy_pnpm_package_comprehensive(zip, &parent_path.join("node_modules"), &parent_path.join("node_modules").join(".pnpm"), package_name, opts) {
+            println!("Warning: Failed to copy package {}: {}", package_name, e);
+        }
+    }
+
+    // Copy .bin directory if it exists
+    let bin_dir = parent_path.join("node_modules").join(".bin");
+    if bin_dir.exists() {
+        add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
+    }
+
+    // Copy important pnpm metadata files
+    let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
+    for file_name in important_files {
+        let file_path = parent_path.join("node_modules").join(file_name);
+        if file_path.exists() {
+            let dest_path = Path::new("app/node_modules").join(file_name);
+            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            let data = fs::read(&file_path)?;
+            zip.write_all(&data)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Very lightweight Node version detection.
@@ -1165,6 +1477,113 @@ where
         let data = fs::read(path).context("Failed to read file while zipping")?;
         zip.write_all(&data)?;
     }
+    Ok(())
+}
+
+/// Copy a package from workspace node_modules (for regular npm/yarn workspaces)
+fn copy_workspace_package<W>(
+    zip: &mut ZipWriter<W>,
+    node_modules_path: &Path,
+    package_name: &str,
+    opts: zip::write::FileOptions<'static, ()>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let dest_path = Path::new("app/node_modules").join(package_name);
+    let package_path = node_modules_path.join(package_name);
+    
+    if package_path.exists() {
+        let target_path = if package_path.is_symlink() {
+            // Follow the symlink
+            let target = fs::read_link(&package_path)?;
+            if target.is_absolute() {
+                target
+            } else {
+                package_path.parent().unwrap().join(target).canonicalize()?
+            }
+        } else {
+            package_path
+        };
+        
+        if target_path.exists() {
+            add_dir_to_zip_no_follow_skip_parents(zip, &target_path, &dest_path, opts)?;
+            return Ok(());
+        }
+    }
+    
+    anyhow::bail!("Package {} not found in workspace node_modules", package_name)
+}
+
+/// Resolve dependencies for regular workspaces (non-pnpm)
+fn resolve_workspace_dependencies(
+    node_modules_path: &Path,
+    package_name: &str,
+    resolved: &mut std::collections::HashSet<String>,
+    depth: usize,
+) -> Result<()> {
+    // Avoid infinite recursion
+    if depth > 20 {
+        return Ok(());
+    }
+    
+    // If already resolved, skip
+    if resolved.contains(package_name) {
+        return Ok(());
+    }
+    
+    resolved.insert(package_name.to_string());
+    
+    // Try to find the package and read its package.json
+    let package_path = node_modules_path.join(package_name);
+    let package_json_path = if package_path.is_symlink() {
+        let target = fs::read_link(&package_path)?;
+        let target_path = if target.is_absolute() {
+            target
+        } else {
+            package_path.parent().unwrap().join(target).canonicalize()?
+        };
+        target_path.join("package.json")
+    } else {
+        package_path.join("package.json")
+    };
+    
+    if !package_json_path.exists() {
+        return Ok(()); // Skip packages we can't find
+    }
+    
+    let package_json_content = fs::read_to_string(&package_json_path)
+        .context("Failed to read package.json")?;
+    
+    if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
+        // Add production dependencies
+        if let Some(deps) = package_json["dependencies"].as_object() {
+            for dep_name in deps.keys() {
+                resolve_workspace_dependencies(node_modules_path, dep_name, resolved, depth + 1)?;
+            }
+        }
+        
+        // Also include peerDependencies that are actually installed
+        if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
+            for dep_name in peer_deps.keys() {
+                let dep_path = node_modules_path.join(dep_name);
+                if dep_path.exists() {
+                    resolve_workspace_dependencies(node_modules_path, dep_name, resolved, depth + 1)?;
+                }
+            }
+        }
+        
+        // Also include optionalDependencies that are actually installed
+        if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
+            for dep_name in optional_deps.keys() {
+                let dep_path = node_modules_path.join(dep_name);
+                if dep_path.exists() {
+                    resolve_workspace_dependencies(node_modules_path, dep_name, resolved, depth + 1)?;
+                }
+            }
+        }
+    }
+    
     Ok(())
 }
 
