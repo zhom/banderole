@@ -25,32 +25,34 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
     let pkg_json = project_path.join("package.json");
     anyhow::ensure!(pkg_json.exists(), "package.json not found in {}", project_path.display());
 
-    // 2. Read `package.json` for name/version (best-effort – fall back if absent).
-    let (app_name, app_version) = {
-        let content = fs::read_to_string(&pkg_json).context("Failed to read package.json")?;
-        let value: Value = serde_json::from_str(&content).context("Failed to parse package.json")?;
-        (
-            value["name"].as_str().unwrap_or("app").to_string(),
-            value["version"].as_str().unwrap_or("0.0.0").to_string(),
-        )
-    };
+    // 2. Read `package.json` for name/version and detect project structure
+    let package_content = fs::read_to_string(&pkg_json).context("Failed to read package.json")?;
+    let package_value: Value = serde_json::from_str(&package_content).context("Failed to parse package.json")?;
+    
+    let (app_name, app_version) = (
+        package_value["name"].as_str().unwrap_or("app").to_string(),
+        package_value["version"].as_str().unwrap_or("0.0.0").to_string(),
+    );
 
-    // 3. Determine Node version (via .nvmrc / .node-version or default to LTS 22.17.1).
+    // 3. Determine the correct source directory to bundle
+    let source_dir = determine_source_directory(&project_path, &package_value)?;
+    
+    // 4. Determine Node version (via .nvmrc / .node-version or default to LTS 22.17.1).
     let node_version = detect_node_version(&project_path).unwrap_or_else(|_| "22.17.1".into());
 
     println!(
         "Bundling {app_name} v{app_version} using Node.js v{node_version} for {plat}",
         plat = Platform::current()
     );
+    
+    if source_dir != project_path {
+        println!("Using source directory: {}", source_dir.display());
+    }
 
-    // 4. Resolve output path.
-    let output_path = output_path.unwrap_or_else(|| {
-        let ext = if Platform::current().is_windows() { ".exe" } else { "" };
-        let base_name = custom_name.as_ref().unwrap_or(&app_name);
-        PathBuf::from(format!("{base_name}{ext}"))
-    });
+    // 5. Resolve output path with collision handling
+    let output_path = resolve_output_path(output_path, &app_name, custom_name.as_deref())?;
 
-    // 5. Ensure portable Node binary is available.
+    // 6. Ensure portable Node binary is available.
     let node_downloader = NodeDownloader::new_with_persistent_cache(node_version.clone())?;
     let node_executable = node_downloader.ensure_node_binary().await?;
     let node_root = node_executable
@@ -59,21 +61,45 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
         .parent()
         .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()));
 
-    // 6. Create an in-memory zip archive containing `/app` and `/node` directories.
+    // 7. Create an in-memory zip archive containing `/app` and `/node` directories.
     let mut zip_data: Vec<u8> = Vec::new();
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
         let opts: zip::write::FileOptions<'static, ()> = zip::write::FileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
 
-        // Copy project directory.
-        add_dir_to_zip(&mut zip, &project_path, Path::new("app"), opts)?;
+        // Copy the determined source directory
+        add_dir_to_zip(&mut zip, &source_dir, Path::new("app"), opts)?;
+        
+        // If we're using a subdirectory, also copy the root package.json with adjusted paths
+        if source_dir != project_path {
+            let root_package_json = project_path.join("package.json");
+            if root_package_json.exists() {
+                zip.start_file("app/package.json", opts)?;
+                
+                // Read and modify package.json to adjust the main path
+                let content = fs::read_to_string(&root_package_json).context("Failed to read root package.json")?;
+                let mut package_value: Value = serde_json::from_str(&content).context("Failed to parse root package.json")?;
+                
+                // Adjust the main field if it points to the source directory
+                if let Some(main) = package_value["main"].as_str() {
+                    let main_path = project_path.join(main);
+                    if let Ok(relative_to_source) = main_path.strip_prefix(&source_dir) {
+                        package_value["main"] = Value::String(relative_to_source.to_string_lossy().to_string());
+                    }
+                }
+                
+                let modified_content = serde_json::to_string_pretty(&package_value)
+                    .context("Failed to serialize modified package.json")?;
+                zip.write_all(modified_content.as_bytes())?;
+            }
+        }
         // Copy Node runtime directory.
         add_dir_to_zip(&mut zip, node_root, Path::new("node"), opts)?;
         zip.finish()?;
     }
 
-    // 7. Build self-extracting launcher using a more reliable approach.
+    // 8. Build self-extracting launcher using a more reliable approach.
     create_self_extracting_executable(&output_path, zip_data, &app_name)?;
 
     println!("Bundle created at {}", output_path.display());
@@ -94,6 +120,150 @@ fn detect_node_version(project_path: &Path) -> Result<String> {
 
 fn normalise_node_version(raw: &str) -> String {
     raw.trim_start_matches('v').to_owned()
+}
+
+/// Determine the correct source directory to bundle for the project.
+/// This handles TypeScript projects and other build configurations.
+fn determine_source_directory(project_path: &Path, package_json: &Value) -> Result<PathBuf> {
+    // Check if there's a specific main entry point that indicates a built project
+    if let Some(main) = package_json["main"].as_str() {
+        let main_path = project_path.join(main);
+        if let Some(parent) = main_path.parent() {
+            // If main points to a file in a subdirectory like dist/index.js or build/index.js
+            let parent_name = parent.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            
+            if ["dist", "build", "lib", "out"].contains(&parent_name) && parent.exists() {
+                return Ok(parent.to_path_buf());
+            }
+        }
+    }
+
+    // Check for TypeScript configuration
+    let tsconfig_path = project_path.join("tsconfig.json");
+    if tsconfig_path.exists() {
+        if let Ok(tsconfig) = read_tsconfig(&tsconfig_path) {
+            if let Some(out_dir) = tsconfig["compilerOptions"]["outDir"].as_str() {
+                let out_path = project_path.join(out_dir);
+                if out_path.exists() {
+                    return Ok(out_path);
+                }
+            }
+        }
+    }
+
+    // Check for common build output directories
+    for dir_name in ["dist", "build", "lib", "out"] {
+        let dir_path = project_path.join(dir_name);
+        if dir_path.exists() && dir_path.is_dir() {
+            // Verify it contains JavaScript files or a package.json
+            if contains_js_files(&dir_path) || dir_path.join("package.json").exists() {
+                return Ok(dir_path);
+            }
+        }
+    }
+
+    // Default to the project root
+    Ok(project_path.to_path_buf())
+}
+
+/// Read and parse tsconfig.json, handling extends configuration
+fn read_tsconfig(tsconfig_path: &Path) -> Result<Value> {
+    let content = fs::read_to_string(tsconfig_path)
+        .context("Failed to read tsconfig.json")?;
+    
+    // Remove comments for JSON parsing (simple approach)
+    let cleaned_content = content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    
+    let mut config: Value = serde_json::from_str(&cleaned_content)
+        .context("Failed to parse tsconfig.json")?;
+
+    // Handle extends configuration
+    if let Some(extends) = config["extends"].as_str() {
+        let base_path = if extends.starts_with('.') {
+            tsconfig_path.parent().unwrap().join(extends)
+        } else {
+            // Could be a package reference, but for now we'll skip
+            return Ok(config);
+        };
+
+        // Add .json extension if not present
+        let base_path = if base_path.extension().is_none() {
+            base_path.with_extension("json")
+        } else {
+            base_path
+        };
+
+        if base_path.exists() {
+            if let Ok(base_config) = read_tsconfig(&base_path) {
+                // Merge base config with current config (simple merge)
+                if let (Some(base_obj), Some(current_obj)) = (base_config.as_object(), config.as_object()) {
+                    let mut merged = base_obj.clone();
+                    for (key, value) in current_obj {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                    config = Value::Object(merged);
+                }
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+/// Check if a directory contains JavaScript files
+fn contains_js_files(dir: &Path) -> bool {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the output path, handling naming conflicts
+fn resolve_output_path(
+    output_path: Option<PathBuf>,
+    app_name: &str,
+    custom_name: Option<&str>,
+) -> Result<PathBuf> {
+    if let Some(path) = output_path {
+        // If explicit output path is provided, use it as-is
+        return Ok(path);
+    }
+
+    let ext = if Platform::current().is_windows() { ".exe" } else { "" };
+    let base_name = custom_name.unwrap_or(app_name);
+    let mut output_path = PathBuf::from(format!("{base_name}{ext}"));
+
+    // Check for conflicts and resolve them
+    let mut counter = 1;
+    while output_path.exists() {
+        if output_path.is_dir() {
+            // If it's a directory, append a suffix
+            output_path = PathBuf::from(format!("{base_name}-bundle{ext}"));
+            if !output_path.exists() {
+                break;
+            }
+        }
+        
+        // If it still exists (file or another directory), add a counter
+        if output_path.exists() {
+            output_path = PathBuf::from(format!("{base_name}-bundle-{counter}{ext}"));
+            counter += 1;
+        }
+    }
+
+    Ok(output_path)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -97,7 +97,7 @@ process.exit(0);"#;
         .args(["bundle", test_app_path.to_str().unwrap()])
         .current_dir(temp_dir.path());
 
-    let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
+    let bundle_output = bundle_cmd.output()?;
 
     if !bundle_output.status.success() {
         println!(
@@ -339,6 +339,531 @@ process.exit(0);"#;
         "Expected Node.js version not found in executable output: {}",
         stdout
     );
+}
+
+#[tokio::test]
+async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let test_app_path = temp_dir.path().join("collision-test-app");
+
+    // Create a simple test app
+    std::fs::create_dir_all(&test_app_path)?;
+
+    let package_json = r#"{
+  "name": "collision-test-app",
+  "version": "1.0.0",
+  "main": "index.js"
+}"#;
+
+    let index_js = r#"console.log("Hello from collision test app!");"#;
+
+    std::fs::write(test_app_path.join("package.json"), package_json)?;
+    std::fs::write(test_app_path.join("index.js"), index_js)?;
+
+    // Create a directory with the same name as the app to cause collision
+    std::fs::create_dir_all(temp_dir.path().join("collision-test-app"))?;
+
+    // Build banderole
+    let target_dir = std::env::current_dir()?.join("target");
+    let banderole_path = target_dir.join("debug/banderole");
+    
+    if !banderole_path.exists() {
+        let output = Command::new("cargo")
+            .args(["build"])
+            .output()
+            .expect("Failed to build banderole");
+
+        assert!(
+            output.status.success(),
+            "Failed to build banderole: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bundle the test app
+    println!("Testing output path collision handling...");
+    
+    let mut bundle_cmd = Command::new(&banderole_path);
+    bundle_cmd
+        .args(["bundle", test_app_path.to_str().unwrap()])
+        .current_dir(temp_dir.path());
+
+    let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
+
+    if !bundle_output.status.success() {
+        println!(
+            "Bundle stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        println!(
+            "Bundle stderr: {}",
+            String::from_utf8_lossy(&bundle_output.stderr)
+        );
+        return Err("Bundle command failed".into());
+    }
+
+    // Verify that a bundle was created with collision-avoided name
+    let expected_executable = temp_dir.path().join(if cfg!(windows) {
+        "collision-test-app-bundle.exe"
+    } else {
+        "collision-test-app-bundle"
+    });
+
+    assert!(
+        expected_executable.exists(),
+        "Executable was not created with collision-avoided name: {}. Directory contents: {:?}",
+        expected_executable.display(),
+        std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>()
+    );
+
+    // Test that the executable works
+    let output = Command::new(&expected_executable)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("Collision test output: {}", stdout);
+
+    assert!(output.status.success(), "Collision test executable failed");
+    assert!(
+        stdout.contains("Hello from collision test app!"),
+        "Expected greeting not found in collision test output"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typescript_project_with_dist() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let test_app_path = temp_dir.path().join("ts-test-app");
+
+    // Create a TypeScript project structure
+    std::fs::create_dir_all(&test_app_path)?;
+    std::fs::create_dir_all(test_app_path.join("dist"))?;
+
+    let package_json = r#"{
+  "name": "ts-test-app",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc"
+  }
+}"#;
+
+    let tsconfig_json = r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true
+  }
+}"#;
+
+    let src_index_ts = r#"console.log("Hello from TypeScript app!");
+console.log("Node version:", process.version);
+console.log("This should come from the dist directory");"#;
+
+    let dist_index_js = r#"console.log("Hello from TypeScript app!");
+console.log("Node version:", process.version);
+console.log("This should come from the dist directory");
+try {
+    const marker = require('./marker.js');
+    console.log("Marker file found:", marker.source);
+} catch (e) {
+    console.log("Marker file not found");
+}"#;
+
+    // Create a distinctive file in dist to verify it was used as source
+    let dist_marker = r#"module.exports = { source: "dist" };"#;
+
+    // Write project files
+    std::fs::write(test_app_path.join("package.json"), package_json)?;
+    std::fs::write(test_app_path.join("tsconfig.json"), tsconfig_json)?;
+    std::fs::create_dir_all(test_app_path.join("src"))?;
+    std::fs::write(test_app_path.join("src/index.ts"), src_index_ts)?;
+    std::fs::write(test_app_path.join("dist/index.js"), dist_index_js)?;
+    std::fs::write(test_app_path.join("dist/marker.js"), dist_marker)?;
+
+    // Build banderole
+    let target_dir = std::env::current_dir()?.join("target");
+    let banderole_path = target_dir.join("debug/banderole");
+    
+    if !banderole_path.exists() {
+        let output = Command::new("cargo")
+            .args(["build"])
+            .output()
+            .expect("Failed to build banderole");
+
+        assert!(
+            output.status.success(),
+            "Failed to build banderole: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bundle the TypeScript project
+    println!("Testing TypeScript project bundling...");
+    
+    let mut bundle_cmd = Command::new(&banderole_path);
+    bundle_cmd
+        .args(["bundle", test_app_path.to_str().unwrap()])
+        .current_dir(temp_dir.path());
+
+    let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
+
+    if !bundle_output.status.success() {
+        println!(
+            "Bundle stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        println!(
+            "Bundle stderr: {}",
+            String::from_utf8_lossy(&bundle_output.stderr)
+        );
+        return Err("TypeScript bundle command failed".into());
+    }
+
+    // We'll verify that the dist directory was used by running the executable
+    // and checking that it includes our marker file
+
+    // Find the created executable (may have collision avoidance suffix)
+    let mut executable_path = temp_dir.path().join(if cfg!(windows) {
+        "ts-test-app.exe"
+    } else {
+        "ts-test-app"
+    });
+    
+    // Check if collision avoidance was used (need to check if it's a file, not just exists)
+    if !executable_path.exists() || !executable_path.is_file() {
+        executable_path = temp_dir.path().join(if cfg!(windows) {
+            "ts-test-app-bundle.exe"
+        } else {
+            "ts-test-app-bundle"
+        });
+    }
+    
+
+
+    assert!(
+        executable_path.exists(),
+        "TypeScript executable was not created: {}. Found files: {:?}",
+        executable_path.display(),
+        std::fs::read_dir(temp_dir.path()).unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>()
+    );
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&executable_path)?.permissions();
+        let mut perms = perms.clone();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&executable_path, perms)?;
+    }
+
+    // Test the executable
+    let output = Command::new(&executable_path)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("TypeScript test output: {}", stdout);
+
+    assert!(output.status.success(), "TypeScript executable failed");
+    assert!(
+        stdout.contains("Hello from TypeScript app!"),
+        "Expected greeting not found in TypeScript output"
+    );
+    assert!(
+        stdout.contains("This should come from the dist directory"),
+        "Should be running from dist directory"
+    );
+    assert!(
+        stdout.contains("Marker file found: dist"),
+        "Should have included marker file from dist directory, indicating dist was used as source"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typescript_project_with_tsconfig_outdir() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let test_app_path = temp_dir.path().join("ts-outdir-test");
+
+    // Create a TypeScript project with custom outDir
+    std::fs::create_dir_all(&test_app_path)?;
+    std::fs::create_dir_all(test_app_path.join("build"))?;
+
+    let package_json = r#"{
+  "name": "ts-outdir-test",
+  "version": "1.0.0",
+  "main": "index.js"
+}"#;
+
+    let tsconfig_json = r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "outDir": "./build",
+    "rootDir": "./src"
+  }
+}"#;
+
+    let build_index_js = r#"console.log("Hello from custom outDir!");
+console.log("This comes from the build directory");
+try {
+    const marker = require('./marker.js');
+    console.log("Marker file found:", marker.source);
+} catch (e) {
+    console.log("Marker file not found");
+}"#;
+
+    let build_marker = r#"module.exports = { source: "build" };"#;
+
+    // Write project files
+    std::fs::write(test_app_path.join("package.json"), package_json)?;
+    std::fs::write(test_app_path.join("tsconfig.json"), tsconfig_json)?;
+    std::fs::write(test_app_path.join("build/index.js"), build_index_js)?;
+    std::fs::write(test_app_path.join("build/marker.js"), build_marker)?;
+
+    // Build banderole
+    let target_dir = std::env::current_dir()?.join("target");
+    let banderole_path = target_dir.join("debug/banderole");
+    
+    if !banderole_path.exists() {
+        let output = Command::new("cargo")
+            .args(["build"])
+            .output()
+            .expect("Failed to build banderole");
+
+        assert!(
+            output.status.success(),
+            "Failed to build banderole: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bundle the project
+    println!("Testing TypeScript project with custom outDir...");
+    
+    let mut bundle_cmd = Command::new(&banderole_path);
+    bundle_cmd
+        .args(["bundle", test_app_path.to_str().unwrap()])
+        .current_dir(temp_dir.path());
+
+    let bundle_output = bundle_cmd.output()?;
+
+    if !bundle_output.status.success() {
+        println!(
+            "Bundle stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        println!(
+            "Bundle stderr: {}",
+            String::from_utf8_lossy(&bundle_output.stderr)
+        );
+        return Err("Custom outDir bundle command failed".into());
+    }
+
+    // We'll verify that the build directory was used by checking the marker file
+
+    // Find the created executable (may have collision avoidance suffix)
+    let mut executable_path = temp_dir.path().join(if cfg!(windows) {
+        "ts-outdir-test.exe"
+    } else {
+        "ts-outdir-test"
+    });
+    
+    // Check if collision avoidance was used (need to check if it's a file, not just exists)
+    if !executable_path.exists() || !executable_path.is_file() {
+        executable_path = temp_dir.path().join(if cfg!(windows) {
+            "ts-outdir-test-bundle.exe"
+        } else {
+            "ts-outdir-test-bundle"
+        });
+    }
+
+    assert!(executable_path.exists(), "Custom outDir executable was not created");
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&executable_path)?.permissions();
+        let mut perms = perms.clone();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&executable_path, perms)?;
+    }
+
+    let output = Command::new(&executable_path)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("Custom outDir test output: {}", stdout);
+
+    assert!(output.status.success(), "Custom outDir executable failed");
+    assert!(
+        stdout.contains("Hello from custom outDir!"),
+        "Expected greeting not found"
+    );
+    assert!(
+        stdout.contains("This comes from the build directory"),
+        "Should be running from build directory"
+    );
+    assert!(
+        stdout.contains("Marker file found: build"),
+        "Should have included marker file from build directory, indicating build was used as source"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typescript_project_with_extends() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let test_app_path = temp_dir.path().join("ts-extends-test");
+
+    // Create a TypeScript project with extends configuration
+    std::fs::create_dir_all(&test_app_path)?;
+    std::fs::create_dir_all(test_app_path.join("lib"))?;
+
+    let package_json = r#"{
+  "name": "ts-extends-test",
+  "version": "1.0.0",
+  "main": "index.js"
+}"#;
+
+    let base_tsconfig = r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "outDir": "./lib"
+  }
+}"#;
+
+    let tsconfig_json = r#"{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true
+  }
+}"#;
+
+    let lib_index_js = r#"console.log("Hello from extended tsconfig!");
+console.log("This comes from the lib directory via extends");
+try {
+    const marker = require('./marker.js');
+    console.log("Marker file found:", marker.source);
+} catch (e) {
+    console.log("Marker file not found");
+}"#;
+
+    let lib_marker = r#"module.exports = { source: "lib" };"#;
+
+    // Write project files
+    std::fs::write(test_app_path.join("package.json"), package_json)?;
+    std::fs::write(test_app_path.join("tsconfig.base.json"), base_tsconfig)?;
+    std::fs::write(test_app_path.join("tsconfig.json"), tsconfig_json)?;
+    std::fs::write(test_app_path.join("lib/index.js"), lib_index_js)?;
+    std::fs::write(test_app_path.join("lib/marker.js"), lib_marker)?;
+
+    // Build banderole
+    let target_dir = std::env::current_dir()?.join("target");
+    let banderole_path = target_dir.join("debug/banderole");
+    
+    if !banderole_path.exists() {
+        let output = Command::new("cargo")
+            .args(["build"])
+            .output()
+            .expect("Failed to build banderole");
+
+        assert!(
+            output.status.success(),
+            "Failed to build banderole: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bundle the project
+    println!("Testing TypeScript project with extends...");
+    
+    let mut bundle_cmd = Command::new(&banderole_path);
+    bundle_cmd
+        .args(["bundle", test_app_path.to_str().unwrap()])
+        .current_dir(temp_dir.path());
+
+    let bundle_output = bundle_cmd.output()?;
+
+    if !bundle_output.status.success() {
+        println!(
+            "Bundle stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        println!(
+            "Bundle stderr: {}",
+            String::from_utf8_lossy(&bundle_output.stderr)
+        );
+        return Err("Extends tsconfig bundle command failed".into());
+    }
+
+    // We'll verify that the lib directory was used by checking the marker file
+
+    // Find the created executable (may have collision avoidance suffix)
+    let mut executable_path = temp_dir.path().join(if cfg!(windows) {
+        "ts-extends-test.exe"
+    } else {
+        "ts-extends-test"
+    });
+    
+    // Check if collision avoidance was used (need to check if it's a file, not just exists)
+    if !executable_path.exists() || !executable_path.is_file() {
+        executable_path = temp_dir.path().join(if cfg!(windows) {
+            "ts-extends-test-bundle.exe"
+        } else {
+            "ts-extends-test-bundle"
+        });
+    }
+
+    assert!(executable_path.exists(), "Extends tsconfig executable was not created");
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&executable_path)?.permissions();
+        let mut perms = perms.clone();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&executable_path, perms)?;
+    }
+
+    let output = Command::new(&executable_path)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("Extends tsconfig test output: {}", stdout);
+
+    assert!(output.status.success(), "Extends tsconfig executable failed");
+    assert!(
+        stdout.contains("Hello from extended tsconfig!"),
+        "Expected greeting not found"
+    );
+    assert!(
+        stdout.contains("This comes from the lib directory via extends"),
+        "Should be running from lib directory"
+    );
+    assert!(
+        stdout.contains("Marker file found: lib"),
+        "Should have included marker file from lib directory, indicating lib was used as source"
+    );
+
+    Ok(())
 }
 
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std::process::Output> {

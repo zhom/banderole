@@ -1,4 +1,4 @@
-mod bundler_simple;
+mod bundler;
 mod node_downloader;
 mod platform;
 
@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Bundle { path, output, name } => {
-            bundler_simple::bundle_project(path, output, name).await?;
+            bundler::bundle_project(path, output, name).await?;
         }
     }
 

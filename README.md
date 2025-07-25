@@ -32,6 +32,7 @@ banderole bundle /path/to/project --output /path/to/my-app --name my-app
 
 - [x] Support Linux, MacOS, and Windows for both x64 and arm64 architectures.
 - [x] Support custom node.js version based on project's `.nvmrc` and `.node-version`
+- [x] Support TypeScript projects with automatic detection of compiled output directories
 - [ ] Support workspaces (currently you need to install dependencies directly)
 
 ## License
