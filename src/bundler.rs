@@ -66,7 +66,8 @@ pub async fn bundle_project(project_path: PathBuf, output_path: Option<PathBuf>,
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
         let opts: zip::write::FileOptions<'static, ()> = zip::write::FileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(8));
 
         // Copy the determined source directory
         add_dir_to_zip(&mut zip, &source_dir, Path::new("app"), opts)?;
