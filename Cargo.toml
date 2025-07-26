@@ -5,7 +5,7 @@ homepage = "https://github.com/zhom/banderole"
 repository = "https://github.com/zhom/banderole"
 license = "MIT"
 authors = ["zhom <contact@donutbrowser.com>"]
-version = "0.0.5"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
