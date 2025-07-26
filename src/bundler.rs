@@ -998,13 +998,13 @@ fn detect_node_version(project_path: &Path) -> Result<String> {
         let path = project_path.join(file);
         if path.exists() {
             let v = fs::read_to_string(&path)?;
-            return Ok(normalise_node_version(v.trim()));
+            return Ok(normalize_node_version(v.trim()));
         }
     }
     anyhow::bail!("Node version not found")
 }
 
-fn normalise_node_version(raw: &str) -> String {
+fn normalize_node_version(raw: &str) -> String {
     raw.trim_start_matches('v').to_owned()
 }
 
@@ -1177,12 +1177,10 @@ fn create_unix_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Resu
 
     let mut file = fs::File::create(out).context("Failed to create output executable")?;
 
-    // Write a shell script with improved queue system for concurrent execution
     let script = format!(
         r#"#!/bin/bash
 set -e
 
-# Determine cache directory using directories pattern
 if [ -n "$XDG_CACHE_HOME" ]; then
     CACHE_DIR="$XDG_CACHE_HOME/banderole"
 elif [ -n "$HOME" ]; then
@@ -1192,14 +1190,10 @@ else
 fi
 
 APP_DIR="$CACHE_DIR/{}"
-LOCK_FILE="$APP_DIR/.lock"
 READY_FILE="$APP_DIR/.ready"
-QUEUE_DIR="$APP_DIR/.queue"
-EXTRACTION_PID_FILE="$APP_DIR/.extraction.pid"
 
-# Function to run the application
 run_app() {{
-    cd "$APP_DIR/app"
+    cd "$APP_DIR/app" || exit 1
     
     # Find main script from package.json
     MAIN_SCRIPT=$("$APP_DIR/node/bin/node" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2>/dev/null || echo "index.js")
@@ -1212,162 +1206,63 @@ run_app() {{
     fi
 }}
 
-# Function to clean up queue entry
-cleanup_queue() {{
-    if [ -n "$QUEUE_ENTRY" ] && [ -f "$QUEUE_ENTRY" ]; then
-        rm -f "$QUEUE_ENTRY" 2>/dev/null || true
-    fi
-}}
-
-# Set up cleanup trap
-trap cleanup_queue EXIT
-
-# Check if already extracted and ready
 if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-    # Already extracted, run directly
     run_app "$@"
 fi
 
-# Create queue directory if it doesn't exist
-mkdir -p "$QUEUE_DIR" 2>/dev/null || true
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
-# Generate unique queue entry
-QUEUE_ENTRY="$QUEUE_DIR/$$-$(date +%s%N)"
-echo "$$" > "$QUEUE_ENTRY"
+ATTEMPTS=0
+MAX_ATTEMPTS=30
 
-# Try to acquire extraction lock
-(
-    # Use flock if available, otherwise use mkdir as fallback
-    if command -v flock >/dev/null 2>&1; then
-        exec 200>"$LOCK_FILE"
-        if ! flock -n 200; then
-            # Another process is extracting, wait in queue
-            while [ ! -f "$READY_FILE" ]; do
-                # Check if extraction process is still alive
-                if [ -f "$EXTRACTION_PID_FILE" ]; then
-                    EXTRACTION_PID=$(cat "$EXTRACTION_PID_FILE" 2>/dev/null || echo "")
-                    if [ -n "$EXTRACTION_PID" ] && ! kill -0 "$EXTRACTION_PID" 2>/dev/null; then
-                        # Extraction process died, clean up and try again
-                        rm -f "$EXTRACTION_PID_FILE" "$LOCK_FILE" 2>/dev/null || true
-                        break
-                    fi
-                fi
-                sleep 0.1
-            done
-            
-            # Wait for our turn in the queue
-            while [ -f "$QUEUE_ENTRY" ]; do
-                if [ -f "$READY_FILE" ]; then
-                    break
-                fi
-                
-                # Check if we're the first in queue
-                FIRST_QUEUE=$(ls -1 "$QUEUE_DIR" 2>/dev/null | head -n1 || echo "")
-                if [ "$(basename "$QUEUE_ENTRY")" = "$FIRST_QUEUE" ]; then
-                    break
-                fi
-                sleep 0.05
-            done
-            
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+    if mkdir "$APP_DIR" 2>/dev/null; then
+        
+        TEMP_ZIP=$(mktemp) || exit 1
+        trap 'rm -f "$TEMP_ZIP"' EXIT
+        
+        awk '/^__DATA__$/{{p=1;next}} p{{print}}' "$0" | base64 -d > "$TEMP_ZIP"
+        
+        if [ ! -s "$TEMP_ZIP" ]; then
+            echo "Error: Failed to extract bundle data" >&2
+            rm -rf "$APP_DIR" 2>/dev/null || true
+            exit 1
+        fi
+        
+        if ! unzip -q "$TEMP_ZIP" -d "$APP_DIR" 2>/dev/null; then
+            echo "Error: Failed to extract bundle" >&2
+            rm -rf "$APP_DIR" 2>/dev/null || true
+            exit 1
+        fi
+        
+        if [ ! -f "$APP_DIR/app/package.json" ] || [ ! -x "$APP_DIR/node/bin/node" ]; then
+            echo "Error: Bundle extraction incomplete" >&2
+            rm -rf "$APP_DIR" 2>/dev/null || true
+            exit 1
+        fi
+        
+        touch "$READY_FILE"
+        
+        run_app "$@"
+    else
+        if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
             run_app "$@"
         fi
         
-        # We got the lock, record our PID for extraction
-        echo "$$" > "$EXTRACTION_PID_FILE"
-    else
-        # Fallback to mkdir-based locking
-        while ! mkdir "$LOCK_FILE" 2>/dev/null; do
-            if [ -f "$READY_FILE" ]; then
-                # Wait for our turn in the queue
-                while [ -f "$QUEUE_ENTRY" ]; do
-                    if [ -f "$READY_FILE" ]; then
-                        break
-                    fi
-                    
-                    # Check if we're the first in queue
-                    FIRST_QUEUE=$(ls -1 "$QUEUE_DIR" 2>/dev/null | head -n1 || echo "")
-                    if [ "$(basename "$QUEUE_ENTRY")" = "$FIRST_QUEUE" ]; then
-                        break
-                    fi
-                    sleep 0.05
-                done
-                
-                run_app "$@"
+        ATTEMPTS=$((ATTEMPTS + 1))
+        if [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; then
+            DELAY=$(awk "BEGIN {{print int(100 * (2 ^ (($ATTEMPTS - 1) / 3)) + 0.5)}}" 2>/dev/null || echo 100)
+            if [ "$DELAY" -gt 1000 ]; then
+                DELAY=1000
             fi
-            sleep 0.1
-        done
-        trap "rmdir '$LOCK_FILE' 2>/dev/null || true; rm -f '$EXTRACTION_PID_FILE' 2>/dev/null || true" EXIT
-        
-        # We got the lock, record our PID for extraction
-        echo "$$" > "$EXTRACTION_PID_FILE"
+            sleep $(awk "BEGIN {{print $DELAY / 1000}}" 2>/dev/null || echo 0.1)
+        fi
     fi
+done
 
-    # Check again if extraction completed while we were waiting for lock
-    if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-        run_app "$@"
-    fi
-
-    # Extract application
-    mkdir -p "$APP_DIR"
-
-    # Create a temporary file for the zip data
-    TEMP_ZIP=$(mktemp)
-    trap "rm -f '$TEMP_ZIP'" EXIT
-
-    # Extract embedded zip data (everything after the __DATA__ marker)
-    awk '/^__DATA__$/{{p=1;next}} p{{print}}' "$0" | base64 -d > "$TEMP_ZIP"
-
-    # Verify we got valid zip data
-    if [ ! -s "$TEMP_ZIP" ]; then
-        echo "Error: Failed to extract bundle data" >&2
-        rm -rf "$APP_DIR"
-        exit 1
-    fi
-
-    # Extract the bundle
-    if ! unzip -q "$TEMP_ZIP" -d "$APP_DIR" 2>/dev/null; then
-        echo "Error: Failed to extract bundle" >&2
-        rm -rf "$APP_DIR"
-        exit 1
-    fi
-
-    # Verify extraction worked
-    if [ ! -f "$APP_DIR/app/package.json" ] || [ ! -x "$APP_DIR/node/bin/node" ]; then
-        echo "Error: Bundle extraction incomplete" >&2
-        rm -rf "$APP_DIR"
-        exit 1
-    fi
-
-    # Mark as ready for other processes
-    touch "$READY_FILE"
-
-    # Process queue in order - wake up waiting processes
-    if [ -d "$QUEUE_DIR" ]; then
-        for queue_file in $(ls -1 "$QUEUE_DIR" 2>/dev/null | sort); do
-            queue_path="$QUEUE_DIR/$queue_file"
-            if [ -f "$queue_path" ]; then
-                queue_pid=$(cat "$queue_path" 2>/dev/null || echo "")
-                if [ -n "$queue_pid" ] && kill -0 "$queue_pid" 2>/dev/null; then
-                    # Signal the waiting process by removing its queue file
-                    rm -f "$queue_path" 2>/dev/null || true
-                fi
-            fi
-        done
-    fi
-
-    # Clean up extraction metadata
-    rm -f "$EXTRACTION_PID_FILE" 2>/dev/null || true
-    
-    # Clean up lock
-    if command -v flock >/dev/null 2>&1; then
-        exec 200>&-
-    else
-        rmdir "$LOCK_FILE" 2>/dev/null || true
-    fi
-)
-
-# Run the application
-run_app "$@"
+# If we've exhausted retries, exit with error
+echo "Error: Failed to extract or run application after $MAX_ATTEMPTS attempts" >&2
+exit 1
 
 __DATA__
 "#,
@@ -1376,12 +1271,10 @@ __DATA__
 
     file.write_all(script.as_bytes())?;
 
-    // Append base64-encoded zip data
     let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
     file.write_all(encoded.as_bytes())?;
     file.write_all(b"\n")?;
 
-    // Make executable
     let mut perms = file.metadata()?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(out, perms)?;
@@ -1392,12 +1285,10 @@ __DATA__
 fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
     let mut file = fs::File::create(out).context("Failed to create output executable")?;
 
-    // Create a Windows batch script with improved queue system for concurrent execution
     let script = format!(
         r#"@echo off
 setlocal enabledelayedexpansion
 
-REM Determine cache directory
 set "CACHE_DIR=%LOCALAPPDATA%\banderole"
 set "APP_DIR=!CACHE_DIR!\{}"
 set "LOCK_FILE=!APP_DIR!\.lock"
@@ -1405,11 +1296,9 @@ set "READY_FILE=!APP_DIR!\.ready"
 set "QUEUE_DIR=!APP_DIR!\.queue"
 set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
 
-REM Function to run the application
 :run_app
 cd /d "!APP_DIR!\app"
 
-REM Find main script
 for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
 if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
 
@@ -1421,74 +1310,55 @@ if exist "!MAIN_SCRIPT!" (
     exit /b 1
 )
 
-REM Function to clean up queue entry
 :cleanup_queue
 if defined QUEUE_ENTRY if exist "!QUEUE_ENTRY!" (
     del "!QUEUE_ENTRY!" 2>nul
 )
 exit /b
 
-REM Check if already extracted and ready
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
     goto run_app
 )
-
-REM Create queue directory if it doesn't exist
 if not exist "!QUEUE_DIR!" mkdir "!QUEUE_DIR!" 2>nul
-
-REM Generate unique queue entry
 set "QUEUE_ENTRY=!QUEUE_DIR!\%RANDOM%-%TIME:~6,5%.queue"
 echo %RANDOM% > "!QUEUE_ENTRY!"
 
-REM Try to acquire lock for extraction
 :acquire_lock
 if not exist "!LOCK_FILE!" (
     mkdir "!LOCK_FILE!" 2>nul
     if !errorlevel! equ 0 (
-        REM We got the lock, record our PID for extraction
         echo !RANDOM! > "!EXTRACTION_PID_FILE!"
         goto extract
     )
 )
-
-REM Another process is extracting, wait in queue
 :wait_for_ready
 if exist "!READY_FILE!" (
-    REM Wait for our turn in the queue
     :wait_queue_turn
     if not exist "!QUEUE_ENTRY!" goto run_app
     if exist "!READY_FILE!" goto run_app
     
-    REM Check if we're first in queue (simplified check)
     timeout /t 1 /nobreak >nul 2>&1
     goto wait_queue_turn
 )
 
-REM Check if extraction process is still alive (simplified for Windows)
 if exist "!EXTRACTION_PID_FILE!" (
     timeout /t 1 /nobreak >nul 2>&1
     goto wait_for_ready
 ) else (
-    REM Extraction process may have died, try to acquire lock again
     goto acquire_lock
 )
 
 :extract
-REM Check again if extraction completed while we were waiting for lock
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
     call :cleanup_queue
     rmdir "!LOCK_FILE!" 2>nul
     goto run_app
 )
 
-REM Extract application
 if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
-REM Create temp file for zip
 set "TEMP_ZIP=%TEMP%\banderole-bundle-%RANDOM%.zip"
-
-REM Extract embedded zip data using PowerShell
 powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('%TEMP_ZIP%', [System.Convert]::FromBase64String($data))"
 
 if not exist "%TEMP_ZIP%" (
@@ -1499,7 +1369,6 @@ if not exist "%TEMP_ZIP%" (
     exit /b 1
 )
 
-REM Extract the bundle using PowerShell
 powershell -NoProfile -Command "try {{ Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
 set "EXTRACT_RESULT=!errorlevel!"
 del "%TEMP_ZIP%" 2>nul
@@ -1513,7 +1382,6 @@ if !EXTRACT_RESULT! neq 0 (
     exit /b 1
 )
 
-REM Verify extraction worked
 if not exist "!APP_DIR!\app\package.json" (
     echo Error: Bundle extraction incomplete >&2
     call :cleanup_queue
@@ -1532,24 +1400,19 @@ if not exist "!APP_DIR!\node\node.exe" (
     exit /b 1
 )
 
-REM Mark as ready for other processes
 echo ready > "!READY_FILE!"
 
-REM Process queue in order - clean up queue files to wake up waiting processes
 if exist "!QUEUE_DIR!" (
     for %%f in ("!QUEUE_DIR!\*.queue") do (
         if exist "%%f" del "%%f" 2>nul
     )
 )
 
-REM Clean up extraction metadata
 del "!EXTRACTION_PID_FILE!" 2>nul
 call :cleanup_queue
 
-REM Clean up lock
 rmdir "!LOCK_FILE!" 2>nul
 
-REM Run the application
 goto run_app
 
 __DATA__
