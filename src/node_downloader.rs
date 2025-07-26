@@ -1,12 +1,12 @@
 use crate::platform::Platform;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
+use lazy_static::lazy_static;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use std::path::{Path, PathBuf};
-use lazy_static::lazy_static;
 
 lazy_static! {
     static ref NODE_VERSION_CACHE: Mutex<HashMap<String, PathBuf>> = Mutex::new(HashMap::new());
@@ -19,15 +19,6 @@ pub struct NodeDownloader {
 }
 
 impl NodeDownloader {
-    #[allow(dead_code)]
-    pub fn new(cache_dir: PathBuf, node_version: String) -> Self {
-        Self {
-            platform: Platform::current(),
-            cache_dir,
-            node_version,
-        }
-    }
-
     pub fn new_with_persistent_cache(node_version: String) -> Result<Self> {
         let cache_dir = Self::get_persistent_cache_dir()?;
         Ok(Self {
@@ -57,28 +48,32 @@ impl NodeDownloader {
     pub async fn ensure_node_binary(&self) -> Result<PathBuf> {
         // Create cache key for this version and platform
         let cache_key = format!("{}:{}", self.node_version, self.platform);
-        
+
         // Check in-memory cache first
         {
-            let cache = NODE_VERSION_CACHE.lock().map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
+            let cache = NODE_VERSION_CACHE
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
             if let Some(cached_path) = cache.get(&cache_key) {
                 if cached_path.exists() {
                     return Ok(cached_path.clone());
                 }
             }
         }
-        
+
         // Check disk cache
-        let node_dir = self.cache_dir
+        let node_dir = self
+            .cache_dir
             .join("node")
             .join(&self.node_version)
             .join(self.platform.to_string());
-            
+
         let node_executable = node_dir.join(self.platform.node_executable_path());
 
         if node_executable.exists() {
             // Update in-memory cache
-            let mut cache = NODE_VERSION_CACHE.lock()
+            let mut cache = NODE_VERSION_CACHE
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
             cache.insert(cache_key, node_executable.clone());
             return Ok(node_executable);
@@ -159,14 +154,15 @@ impl NodeDownloader {
         fs::remove_file(&archive_path)
             .await
             .context("Failed to remove archive file")?;
-            
+
         // Update in-memory cache with the path to the node executable
         let node_executable_path = target_dir.join(self.platform.node_executable_path());
-        let mut cache = NODE_VERSION_CACHE.lock()
+        let mut cache = NODE_VERSION_CACHE
+            .lock()
             .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
         cache.insert(
             format!("{}:{}", self.node_version, self.platform),
-            node_executable_path.clone()
+            node_executable_path.clone(),
         );
 
         Ok(())

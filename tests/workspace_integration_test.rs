@@ -1,10 +1,12 @@
 mod common;
 
 use anyhow::Result;
-use common::{BundlerTestHelper, TestAssertions, TestProject, TestProjectManager};
+use common::{
+    BundlerTestHelper, TestAssertions, TestCacheManager, TestProject, TestProjectManager,
+};
 use serial_test::serial;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_npm_workspace_dependency_bundling() -> Result<()> {
     println!("Testing npm workspace dependency bundling...");
@@ -31,11 +33,12 @@ async fn test_npm_workspace_dependency_bundling() -> Result<()> {
         "commander should be installed in workspace root"
     );
 
-    // Bundle the workspace project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the workspace project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("workspace-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -57,7 +60,7 @@ async fn test_npm_workspace_dependency_bundling() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
     println!("Testing pnpm workspace dependency bundling...");
@@ -81,11 +84,12 @@ async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
         }
     }
 
-    // Bundle the pnpm workspace project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the pnpm workspace project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("pnpm-workspace-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -105,7 +109,7 @@ async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_with_typescript_project() -> Result<()> {
     println!("Testing workspace with TypeScript project...");
@@ -122,11 +126,12 @@ async fn test_workspace_with_typescript_project() -> Result<()> {
     // Install dependencies
     manager.install_workspace_dependencies()?;
 
-    // Bundle the TypeScript workspace project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the TypeScript workspace project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("workspace-ts-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -145,7 +150,7 @@ async fn test_workspace_with_typescript_project() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_nested_dependencies() -> Result<()> {
     println!("Testing workspace with nested dependencies...");
@@ -190,11 +195,12 @@ process.exit(0);"#;
 
     std::fs::write(manager.project_path().join("index.js"), complex_index_js)?;
 
-    // Bundle the project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("nested-deps-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -207,7 +213,7 @@ process.exit(0);"#;
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_with_bin_scripts() -> Result<()> {
     println!("Testing workspace with bin scripts...");
@@ -230,11 +236,12 @@ async fn test_workspace_with_bin_scripts() -> Result<()> {
         ".bin directory should exist in workspace node_modules"
     );
 
-    // Bundle the project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("bin-scripts-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -253,7 +260,7 @@ async fn test_workspace_with_bin_scripts() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_project_without_own_node_modules() -> Result<()> {
     println!("Testing workspace project without its own node_modules...");
@@ -282,11 +289,12 @@ async fn test_workspace_project_without_own_node_modules() -> Result<()> {
         "minimist should be in workspace node_modules"
     );
 
-    // Bundle the project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("no-local-deps-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -305,7 +313,7 @@ async fn test_workspace_project_without_own_node_modules() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_with_peer_dependencies() -> Result<()> {
     println!("Testing workspace with peer dependencies...");
@@ -343,11 +351,12 @@ async fn test_workspace_with_peer_dependencies() -> Result<()> {
     // Install dependencies
     manager.install_workspace_dependencies()?;
 
-    // Bundle the project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("peer-deps-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -366,13 +375,13 @@ async fn test_workspace_with_peer_dependencies() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_deep_workspace_nesting() -> Result<()> {
     println!("Testing deep workspace nesting...");
 
     // Create a deeply nested workspace structure
-    let project = TestProject::new("apps/frontend/client")
+    let project = TestProject::new("deep-nested-client")
         .workspace()
         .with_dependency("uuid", "^9.0.1")
         .with_dependency("date-fns", "^2.30.0");
@@ -382,11 +391,12 @@ async fn test_deep_workspace_nesting() -> Result<()> {
     // Install dependencies in workspace root
     manager.install_workspace_dependencies()?;
 
-    // Bundle the deeply nested project
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the deeply nested project)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("deep-nested-test"),
+        false,
     )?;
 
     // Test the bundled executable
@@ -405,7 +415,7 @@ async fn test_deep_workspace_nesting() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_workspace_collision_handling() -> Result<()> {
     println!("Testing workspace collision handling...");
@@ -423,11 +433,12 @@ async fn test_workspace_collision_handling() -> Result<()> {
     // Install dependencies
     manager.install_workspace_dependencies()?;
 
-    // Bundle the project (should handle collision automatically)
-    let executable_path = BundlerTestHelper::bundle_project(
+    // Bundle the project (should handle collision automatically, no compression for speed)
+    let executable_path = BundlerTestHelper::bundle_project_with_compression(
         manager.project_path(),
         manager.temp_dir(),
         Some("collision-test"),
+        false,
     )?;
 
     // The executable should exist with collision avoidance
@@ -449,5 +460,16 @@ async fn test_workspace_collision_handling() -> Result<()> {
     )?;
 
     println!("✅ workspace collision handling test passed!");
+    Ok(())
+}
+/// Cleanup function to be called after all workspace tests
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn test_zzz_cleanup_workspace_cache() -> Result<()> {
+    println!("Cleaning up application cache after workspace tests...");
+
+    TestCacheManager::clear_application_cache()?;
+
+    println!("✅ Workspace cache cleanup completed!");
     Ok(())
 }

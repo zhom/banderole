@@ -40,6 +40,10 @@ harness = true
 name = "workspace_integration_test"
 harness = true
 
+[[test]]
+name = "concurrent_execution_integration_test"
+harness = true
+
 # Run tests sequentially to avoid resource conflicts
 [profile.test]
 opt-level = 0

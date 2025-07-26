@@ -29,6 +29,9 @@ enum Commands {
         /// Custom name for the executable (optional)
         #[arg(short, long)]
         name: Option<String>,
+        /// Disable compression for faster bundling (useful for testing)
+        #[arg(long)]
+        no_compression: bool,
     },
 }
 
@@ -37,8 +40,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Bundle { path, output, name } => {
-            bundler::bundle_project(path, output, name).await?;
+        Commands::Bundle {
+            path,
+            output,
+            name,
+            no_compression,
+        } => {
+            bundler::bundle_project(path, output, name, no_compression).await?;
         }
     }
 

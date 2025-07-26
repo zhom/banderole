@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_bundle_and_run() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -95,12 +95,16 @@ process.exit(0);"#;
         );
     }
 
-    // Bundle the test app
+    // Bundle the test app)
     println!("Bundling test app...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = bundle_cmd.output()?;
@@ -204,7 +208,7 @@ process.exit(0);"#;
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_node_version_detection() {
     let temp_dir = TempDir::new().unwrap();
@@ -246,7 +250,7 @@ process.exit(0);"#;
         .unwrap()
         .join("target/release/banderole");
 
-    // Bundle the test app
+    // Bundle the test app (keep compression for this test to verify it works)
     println!("Bundling test app with .nvmrc...");
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
@@ -343,7 +347,7 @@ process.exit(0);"#;
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -383,12 +387,16 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
         );
     }
 
-    // Bundle the test app
+    // Bundle the test app)
     println!("Testing output path collision handling...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
@@ -438,7 +446,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_typescript_project_with_dist() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -509,12 +517,16 @@ try {
         );
     }
 
-    // Bundle the TypeScript project
+    // Bundle the TypeScript project)
     println!("Testing TypeScript project bundling...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
@@ -594,7 +606,7 @@ try {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_typescript_project_with_tsconfig_outdir() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -653,12 +665,16 @@ try {
         );
     }
 
-    // Bundle the project
+    // Bundle the project)
     println!("Testing TypeScript project with custom outDir...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = bundle_cmd.output()?;
@@ -730,7 +746,7 @@ try {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_typescript_project_with_extends() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -796,12 +812,16 @@ try {
         );
     }
 
-    // Bundle the project
+    // Bundle the project)
     println!("Testing TypeScript project with extends...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = bundle_cmd.output()?;
@@ -876,7 +896,7 @@ try {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_pnpm_dependencies_bundling() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -1005,12 +1025,16 @@ packages:
         );
     }
 
-    // Bundle the pnpm project
+    // Bundle the pnpm project)
     println!("Testing pnpm dependency bundling...");
 
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(["bundle", test_app_path.to_str().unwrap()])
+        .args([
+            "bundle",
+            test_app_path.to_str().unwrap(),
+            "--no-compression",
+        ])
         .current_dir(temp_dir.path());
 
     let bundle_output = run_with_timeout(&mut bundle_cmd, Duration::from_secs(300))?;
@@ -1115,7 +1139,7 @@ packages:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_bundle_simple_project() {
     let temp_dir = TempDir::new().unwrap();
@@ -1157,7 +1181,7 @@ async fn test_bundle_simple_project() {
 
     assert!(npm_install.status.success(), "npm install failed");
 
-    // Bundle the project (we'll use the CLI instead)
+    // Bundle the project (we'll use the CLI instead, no compression for speed)
     let cargo_bin = env!("CARGO_BIN_EXE_banderole");
     let bundle_output = Command::new(cargo_bin)
         .arg("bundle")
@@ -1166,6 +1190,7 @@ async fn test_bundle_simple_project() {
         .arg(temp_dir.path().join("test-bundle"))
         .arg("--name")
         .arg("test-bundle")
+        .arg("--no-compression")
         .output()
         .unwrap();
 
@@ -1183,7 +1208,7 @@ async fn test_bundle_simple_project() {
     // which is complex in a test environment
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn test_pnpm_project_bundling() {
     // This test demonstrates that pnpm projects can be bundled
@@ -1228,7 +1253,7 @@ packages:
 
     fs::write(project_path.join("pnpm-lock.yaml"), pnpm_lock).unwrap();
 
-    // The bundling should handle the pnpm structure gracefully
+    // The bundling should handle the pnpm structure gracefully)
     let cargo_bin = env!("CARGO_BIN_EXE_banderole");
     let result = Command::new(cargo_bin)
         .arg("bundle")
@@ -1237,6 +1262,7 @@ packages:
         .arg(temp_dir.path().join("pnpm-bundle"))
         .arg("--name")
         .arg("pnpm-bundle")
+        .arg("--no-compression")
         .output()
         .unwrap();
 
@@ -1290,4 +1316,18 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std
             ))
         }
     }
+}
+mod common;
+use common::TestCacheManager;
+
+/// Cleanup function to be called after all integration tests
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn test_zzz_cleanup_integration_cache() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Cleaning up application cache after integration tests...");
+
+    TestCacheManager::clear_application_cache()?;
+
+    println!("✅ Integration cache cleanup completed!");
+    Ok(())
 }

@@ -1,9 +1,11 @@
+#![allow(dead_code)]
+
+use anyhow::Result;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
-use std::fs;
-use std::path::{Path, PathBuf};
-use anyhow::Result;
 
 /// Represents different project types for testing
 #[derive(Debug, Clone)]
@@ -47,12 +49,14 @@ impl TestProject {
     }
 
     pub fn with_dependency(mut self, name: &str, version: &str) -> Self {
-        self.dependencies.push((name.to_string(), version.to_string()));
+        self.dependencies
+            .push((name.to_string(), version.to_string()));
         self
     }
 
     pub fn with_dev_dependency(mut self, name: &str, version: &str) -> Self {
-        self.dev_dependencies.push((name.to_string(), version.to_string()));
+        self.dev_dependencies
+            .push((name.to_string(), version.to_string()));
         self
     }
 
@@ -67,7 +71,9 @@ impl TestProject {
     }
 
     pub fn typescript(mut self, out_dir: &str) -> Self {
-        self.project_type = ProjectType::TypeScript { out_dir: out_dir.to_string() };
+        self.project_type = ProjectType::TypeScript {
+            out_dir: out_dir.to_string(),
+        };
         self
     }
 
@@ -264,7 +270,8 @@ process.exit(0);"#;
 
         fs::write(self.project_path.join("package.json"), package_json)?;
 
-        let tsconfig_json = format!(r#"{{
+        let tsconfig_json = format!(
+            r#"{{
   "compilerOptions": {{
     "target": "ES2020",
     "module": "commonjs",
@@ -272,7 +279,8 @@ process.exit(0);"#;
     "rootDir": "./src",
     "strict": true
   }}
-}}"#);
+}}"#
+        );
 
         fs::write(self.project_path.join("tsconfig.json"), tsconfig_json)?;
 
@@ -301,7 +309,10 @@ try {
     console.log("Marker file not found");
 }"#;
 
-        fs::write(self.project_path.join(out_dir).join("index.js"), compiled_index_js)?;
+        fs::write(
+            self.project_path.join(out_dir).join("index.js"),
+            compiled_index_js,
+        )?;
 
         // Create a marker file to verify correct source directory is used
         let marker_js = format!(r#"module.exports = {{ source: "{}" }};"#, out_dir);
@@ -316,7 +327,8 @@ try {
         fs::create_dir_all(&self.project_path)?;
 
         // Create workspace root package.json
-        let workspace_package_json = format!(r#"{{
+        let workspace_package_json = format!(
+            r#"{{
   "name": "test-workspace",
   "version": "1.0.0",
   "private": true,
@@ -326,7 +338,10 @@ try {
   "dependencies": {{
 {}
   }}
-}}"#, config.name, self.format_dependencies(&config.dependencies));
+}}"#,
+            config.name.replace("/", "-"), // Replace slashes to make valid package name
+            self.format_dependencies(&config.dependencies)
+        );
 
         fs::write(workspace_root.join("package.json"), workspace_package_json)?;
 
@@ -374,21 +389,27 @@ process.exit(0);"#;
         fs::create_dir_all(&self.project_path)?;
 
         // Create pnpm-workspace.yaml
-        let pnpm_workspace = format!(r#"packages:
+        let pnpm_workspace = format!(
+            r#"packages:
   - '{}'
-"#, config.name);
+"#,
+            config.name
+        );
 
         fs::write(workspace_root.join("pnpm-workspace.yaml"), pnpm_workspace)?;
 
         // Create workspace root package.json
-        let workspace_package_json = format!(r#"{{
+        let workspace_package_json = format!(
+            r#"{{
   "name": "test-pnpm-workspace",
   "version": "1.0.0",
   "private": true,
   "dependencies": {{
 {}
   }}
-}}"#, self.format_dependencies(&config.dependencies));
+}}"#,
+            self.format_dependencies(&config.dependencies)
+        );
 
         fs::write(workspace_root.join("package.json"), workspace_package_json)?;
 
@@ -434,7 +455,8 @@ process.exit(0);"#;
         let deps = self.format_dependencies(&config.dependencies);
         let dev_deps = self.format_dependencies(&config.dev_dependencies);
 
-        let package_json = format!(r#"{{
+        let package_json = format!(
+            r#"{{
   "name": "{}",
   "version": "1.0.0",
   "main": "index.js",
@@ -443,8 +465,16 @@ process.exit(0);"#;
   }}{}{}
 }}"#,
             config.name,
-            if deps.is_empty() { String::new() } else { format!(",\n  \"dependencies\": {{\n{}\n  }}", deps) },
-            if dev_deps.is_empty() { String::new() } else { format!(",\n  \"devDependencies\": {{\n{}\n  }}", dev_deps) }
+            if deps.is_empty() {
+                String::new()
+            } else {
+                format!(",\n  \"dependencies\": {{\n{}\n  }}", deps)
+            },
+            if dev_deps.is_empty() {
+                String::new()
+            } else {
+                format!(",\n  \"devDependencies\": {{\n{}\n  }}", dev_deps)
+            }
         );
 
         Ok(package_json)
@@ -466,13 +496,11 @@ impl BundlerTestHelper {
     pub fn get_bundler_path() -> Result<PathBuf> {
         let target_dir = std::env::current_dir()?.join("target");
         let bundler_path = target_dir.join("debug/banderole");
-        
+
         if !bundler_path.exists() {
             // Build the bundler if it doesn't exist
             println!("Building banderole...");
-            let output = Command::new("cargo")
-                .args(["build"])
-                .output()?;
+            let output = Command::new("cargo").args(["build"]).output()?;
 
             if !output.status.success() {
                 anyhow::bail!(
@@ -491,14 +519,28 @@ impl BundlerTestHelper {
         output_dir: &Path,
         custom_name: Option<&str>,
     ) -> Result<PathBuf> {
+        Self::bundle_project_with_compression(project_path, output_dir, custom_name, true)
+    }
+
+    /// Bundle a project with compression control and return the path to the created executable
+    pub fn bundle_project_with_compression(
+        project_path: &Path,
+        output_dir: &Path,
+        custom_name: Option<&str>,
+        enable_compression: bool,
+    ) -> Result<PathBuf> {
         let bundler_path = Self::get_bundler_path()?;
-        
+
         let mut cmd = Command::new(&bundler_path);
         cmd.args(["bundle", project_path.to_str().unwrap()])
             .current_dir(output_dir);
 
         if let Some(name) = custom_name {
             cmd.args(["--name", name]);
+        }
+
+        if !enable_compression {
+            cmd.arg("--no-compression");
         }
 
         let bundle_output = Self::run_with_timeout(&mut cmd, Duration::from_secs(300))?;
@@ -526,14 +568,17 @@ impl BundlerTestHelper {
             } else {
                 format!("{}-bundle", executable_name)
             });
-            
+
             if bundle_executable_path.exists() {
                 return Ok(bundle_executable_path);
             }
         }
 
         if !executable_path.exists() {
-            anyhow::bail!("Executable was not created at {}", executable_path.display());
+            anyhow::bail!(
+                "Executable was not created at {}",
+                executable_path.display()
+            );
         }
 
         Ok(executable_path)
@@ -557,7 +602,7 @@ impl BundlerTestHelper {
 
         let mut cmd = Command::new(executable_path);
         cmd.args(args);
-        
+
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
@@ -605,6 +650,63 @@ impl BundlerTestHelper {
     }
 }
 
+/// Test cache management utilities
+pub struct TestCacheManager;
+
+impl TestCacheManager {
+    /// Clear application cache for testing
+    pub fn clear_application_cache() -> Result<()> {
+        // Determine cache directory based on platform
+        let cache_dir = if cfg!(windows) {
+            if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+                std::path::PathBuf::from(local_app_data).join("banderole")
+            } else {
+                return Ok(()); // Can't determine cache dir, skip cleanup
+            }
+        } else {
+            if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
+                std::path::PathBuf::from(xdg_cache).join("banderole")
+            } else if let Some(home) = std::env::var_os("HOME") {
+                std::path::PathBuf::from(home)
+                    .join(".cache")
+                    .join("banderole")
+            } else {
+                std::path::PathBuf::from("/tmp").join("banderole-cache")
+            }
+        };
+
+        if cache_dir.exists() {
+            println!("Clearing application cache at: {}", cache_dir.display());
+
+            // Only remove application cache directories, not the Node.js cache
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                        // Only remove directories that look like UUIDs (application cache)
+                        // Keep "node" directory (Node.js binaries cache)
+                        if dir_name != "node" && dir_name.len() > 10 {
+                            if let Err(e) = std::fs::remove_dir_all(&path) {
+                                println!(
+                                    "Warning: Failed to remove cache directory {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                            } else {
+                                println!("Removed cache directory: {}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Assertion helpers for test verification
 pub struct TestAssertions;
 
@@ -617,7 +719,7 @@ impl TestAssertions {
         args: &[&str],
     ) -> Result<()> {
         let output = BundlerTestHelper::run_executable(executable_path, args, env_vars)?;
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -644,12 +746,9 @@ impl TestAssertions {
     }
 
     /// Assert that dependency tests pass in the bundled executable
-    pub fn assert_dependency_test_passes(
-        executable_path: &Path,
-        test_marker: &str,
-    ) -> Result<()> {
+    pub fn assert_dependency_test_passes(executable_path: &Path, test_marker: &str) -> Result<()> {
         let output = BundlerTestHelper::run_executable(executable_path, &[], &[])?;
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -672,4 +771,4 @@ impl TestAssertions {
 
         Ok(())
     }
-} 
+}
