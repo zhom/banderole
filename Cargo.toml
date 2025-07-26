@@ -30,4 +30,17 @@ base64 = "0.22"
 reqwest = { version = "0.12", features = ["blocking"] }
 
 [dev-dependencies]
-tempfile = "3.20"
+serial_test = "*"
+
+[[test]]
+name = "integration_test"
+harness = true
+
+[[test]]
+name = "workspace_integration_test"
+harness = true
+
+# Run tests sequentially to avoid resource conflicts
+[profile.test]
+opt-level = 0
+debug = true

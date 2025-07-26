@@ -1,11 +1,11 @@
 mod common;
 
-use common::{
-    BundlerTestHelper, TestAssertions, TestProject, TestProjectManager,
-};
 use anyhow::Result;
+use common::{BundlerTestHelper, TestAssertions, TestProject, TestProjectManager};
+use serial_test::serial;
 
 #[tokio::test]
+#[serial]
 async fn test_npm_workspace_dependency_bundling() -> Result<()> {
     println!("Testing npm workspace dependency bundling...");
 
@@ -58,6 +58,7 @@ async fn test_npm_workspace_dependency_bundling() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
     println!("Testing pnpm workspace dependency bundling...");
 
@@ -105,6 +106,7 @@ async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_with_typescript_project() -> Result<()> {
     println!("Testing workspace with TypeScript project...");
 
@@ -144,6 +146,7 @@ async fn test_workspace_with_typescript_project() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_nested_dependencies() -> Result<()> {
     println!("Testing workspace with nested dependencies...");
 
@@ -151,7 +154,7 @@ async fn test_workspace_nested_dependencies() -> Result<()> {
     let project = TestProject::new("nested-deps-app")
         .workspace()
         .with_dependency("express", "^4.18.2") // Has many transitive dependencies
-        .with_dependency("axios", "^1.6.0");   // Also has transitive dependencies
+        .with_dependency("axios", "^1.6.0"); // Also has transitive dependencies
 
     let manager = TestProjectManager::create(project)?;
 
@@ -195,21 +198,25 @@ process.exit(0);"#;
     )?;
 
     // Test the bundled executable
-    TestAssertions::assert_dependency_test_passes(&executable_path, "NESTED_DEPENDENCIES_TEST_PASSED")?;
+    TestAssertions::assert_dependency_test_passes(
+        &executable_path,
+        "NESTED_DEPENDENCIES_TEST_PASSED",
+    )?;
 
     println!("✅ workspace nested dependencies test passed!");
     Ok(())
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_with_bin_scripts() -> Result<()> {
     println!("Testing workspace with bin scripts...");
 
     // Create a workspace project with dependencies that have bin scripts
     let project = TestProject::new("bin-scripts-app")
         .workspace()
-        .with_dependency("semver", "^7.5.4")    // Has a bin script
-        .with_dependency("rimraf", "^5.0.5");   // Has a bin script
+        .with_dependency("semver", "^7.5.4") // Has a bin script
+        .with_dependency("rimraf", "^5.0.5"); // Has a bin script
 
     let manager = TestProjectManager::create(project)?;
 
@@ -247,6 +254,7 @@ async fn test_workspace_with_bin_scripts() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_project_without_own_node_modules() -> Result<()> {
     println!("Testing workspace project without its own node_modules...");
 
@@ -298,6 +306,7 @@ async fn test_workspace_project_without_own_node_modules() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_with_peer_dependencies() -> Result<()> {
     println!("Testing workspace with peer dependencies...");
 
@@ -326,7 +335,10 @@ async fn test_workspace_with_peer_dependencies() -> Result<()> {
   }
 }"#;
 
-    std::fs::write(manager.project_path().join("package.json"), package_json_with_peers)?;
+    std::fs::write(
+        manager.project_path().join("package.json"),
+        package_json_with_peers,
+    )?;
 
     // Install dependencies
     manager.install_workspace_dependencies()?;
@@ -355,6 +367,7 @@ async fn test_workspace_with_peer_dependencies() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_deep_workspace_nesting() -> Result<()> {
     println!("Testing deep workspace nesting...");
 
@@ -393,6 +406,7 @@ async fn test_deep_workspace_nesting() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_workspace_collision_handling() -> Result<()> {
     println!("Testing workspace collision handling...");
 
@@ -436,4 +450,4 @@ async fn test_workspace_collision_handling() -> Result<()> {
 
     println!("✅ workspace collision handling test passed!");
     Ok(())
-} 
+}

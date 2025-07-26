@@ -1,9 +1,11 @@
+use serial_test::serial;
+use std::fs;
 use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
-use std::fs;
 
 #[tokio::test]
+#[serial]
 async fn test_bundle_and_run() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("test-app");
@@ -69,14 +71,17 @@ process.exit(0);"#;
     };
 
     if !npm_install.status.success() {
-        eprintln!("npm install failed: {}", String::from_utf8_lossy(&npm_install.stderr));
+        eprintln!(
+            "npm install failed: {}",
+            String::from_utf8_lossy(&npm_install.stderr)
+        );
     }
 
     // Build banderole if not already built
     println!("Building banderole...");
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -92,7 +97,7 @@ process.exit(0);"#;
 
     // Bundle the test app
     println!("Bundling test app...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -174,10 +179,7 @@ process.exit(0);"#;
         stdout.contains("--test-arg1"),
         "Command line arguments test failed"
     );
-    assert!(
-        stdout.contains("UUID: "),
-        "Module resolution test failed"
-    );
+    assert!(stdout.contains("UUID: "), "Module resolution test failed");
 
     // Test 2: Run again to test cached execution
     println!("Running test 2: Cached execution");
@@ -202,8 +204,9 @@ process.exit(0);"#;
     Ok(())
 }
 
-#[test]
-fn test_node_version_detection() {
+#[tokio::test]
+#[serial]
+async fn test_node_version_detection() {
     let temp_dir = TempDir::new().unwrap();
     let test_app_path = temp_dir.path().join("test-app");
 
@@ -250,8 +253,7 @@ process.exit(0);"#;
         .args(&["bundle", test_app_path.to_str().unwrap()])
         .current_dir(temp_dir.path());
 
-    let bundle_output = bundle_cmd.output()
-        .expect("Failed to bundle test app");
+    let bundle_output = bundle_cmd.output().expect("Failed to bundle test app");
 
     if !bundle_output.status.success() {
         println!(
@@ -310,8 +312,7 @@ process.exit(0);"#;
     cmd.env("DEBUG", "1"); // Enable debug mode
 
     // Use simple output instead of timeout to capture output correctly
-    let run_output = cmd.output()
-        .expect("Failed to run executable");
+    let run_output = cmd.output().expect("Failed to run executable");
 
     if !run_output.status.success() {
         println!(
@@ -343,6 +344,7 @@ process.exit(0);"#;
 }
 
 #[tokio::test]
+#[serial]
 async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("collision-test-app");
@@ -367,7 +369,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
     // Build banderole
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -383,7 +385,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
 
     // Bundle the test app
     println!("Testing output path collision handling...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -422,8 +424,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
     );
 
     // Test that the executable works
-    let output = Command::new(&expected_executable)
-        .output()?;
+    let output = Command::new(&expected_executable).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("Collision test output: {}", stdout);
@@ -438,6 +439,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test]
+#[serial]
 async fn test_typescript_project_with_dist() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("ts-test-app");
@@ -493,7 +495,7 @@ try {
     // Build banderole
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -509,7 +511,7 @@ try {
 
     // Bundle the TypeScript project
     println!("Testing TypeScript project bundling...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -538,7 +540,7 @@ try {
     } else {
         "ts-test-app"
     });
-    
+
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
@@ -547,14 +549,13 @@ try {
             "ts-test-app-bundle"
         });
     }
-    
-
 
     assert!(
         executable_path.exists(),
         "TypeScript executable was not created: {}. Found files: {:?}",
         executable_path.display(),
-        std::fs::read_dir(temp_dir.path()).unwrap()
+        std::fs::read_dir(temp_dir.path())
+            .unwrap()
             .filter_map(Result::ok)
             .map(|e| e.file_name())
             .collect::<Vec<_>>()
@@ -571,8 +572,7 @@ try {
     }
 
     // Test the executable
-    let output = Command::new(&executable_path)
-        .output()?;
+    let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("TypeScript test output: {}", stdout);
@@ -595,6 +595,7 @@ try {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_typescript_project_with_tsconfig_outdir() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("ts-outdir-test");
@@ -638,7 +639,7 @@ try {
     // Build banderole
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -654,7 +655,7 @@ try {
 
     // Bundle the project
     println!("Testing TypeScript project with custom outDir...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -682,7 +683,7 @@ try {
     } else {
         "ts-outdir-test"
     });
-    
+
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
@@ -692,7 +693,10 @@ try {
         });
     }
 
-    assert!(executable_path.exists(), "Custom outDir executable was not created");
+    assert!(
+        executable_path.exists(),
+        "Custom outDir executable was not created"
+    );
 
     // Make executable on Unix
     #[cfg(unix)]
@@ -704,8 +708,7 @@ try {
         std::fs::set_permissions(&executable_path, perms)?;
     }
 
-    let output = Command::new(&executable_path)
-        .output()?;
+    let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("Custom outDir test output: {}", stdout);
@@ -728,6 +731,7 @@ try {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_typescript_project_with_extends() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("ts-extends-test");
@@ -778,7 +782,7 @@ try {
     // Build banderole
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -794,7 +798,7 @@ try {
 
     // Bundle the project
     println!("Testing TypeScript project with extends...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -822,7 +826,7 @@ try {
     } else {
         "ts-extends-test"
     });
-    
+
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
@@ -832,7 +836,10 @@ try {
         });
     }
 
-    assert!(executable_path.exists(), "Extends tsconfig executable was not created");
+    assert!(
+        executable_path.exists(),
+        "Extends tsconfig executable was not created"
+    );
 
     // Make executable on Unix
     #[cfg(unix)]
@@ -844,13 +851,15 @@ try {
         std::fs::set_permissions(&executable_path, perms)?;
     }
 
-    let output = Command::new(&executable_path)
-        .output()?;
+    let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("Extends tsconfig test output: {}", stdout);
 
-    assert!(output.status.success(), "Extends tsconfig executable failed");
+    assert!(
+        output.status.success(),
+        "Extends tsconfig executable failed"
+    );
     assert!(
         stdout.contains("Hello from extended tsconfig!"),
         "Expected greeting not found"
@@ -868,6 +877,7 @@ try {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_pnpm_dependencies_bundling() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let test_app_path = temp_dir.path().join("pnpm-test-app");
@@ -947,28 +957,31 @@ packages:
             println!("Successfully installed pnpm dependencies for test");
         }
         Ok(output) => {
-            println!("pnpm install failed: {}", String::from_utf8_lossy(&output.stderr));
+            println!(
+                "pnpm install failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             println!("Falling back to npm install...");
-            
+
             // Fallback to npm if pnpm is not available
             let npm_install = Command::new("npm")
                 .args(["install", "adm-zip"])
                 .current_dir(&test_app_path)
                 .output()?;
-            
+
             if !npm_install.status.success() {
                 return Err("Failed to install dependencies for test".into());
             }
         }
         Err(_) => {
             println!("pnpm not found, falling back to npm install...");
-            
+
             // Fallback to npm if pnpm is not available
             let npm_install = Command::new("npm")
                 .args(["install", "adm-zip"])
                 .current_dir(&test_app_path)
                 .output()?;
-            
+
             if !npm_install.status.success() {
                 return Err("Failed to install dependencies for test".into());
             }
@@ -978,7 +991,7 @@ packages:
     // Build banderole
     let target_dir = std::env::current_dir()?.join("target");
     let banderole_path = target_dir.join("debug/banderole");
-    
+
     if !banderole_path.exists() {
         let output = Command::new("cargo")
             .args(["build"])
@@ -994,7 +1007,7 @@ packages:
 
     // Bundle the pnpm project
     println!("Testing pnpm dependency bundling...");
-    
+
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
@@ -1027,7 +1040,7 @@ packages:
     } else {
         "pnpm-test-app"
     });
-    
+
     // Check if collision avoidance was used
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
@@ -1041,7 +1054,8 @@ packages:
         executable_path.exists(),
         "pnpm test executable was not created: {}. Found files: {:?}",
         executable_path.display(),
-        std::fs::read_dir(temp_dir.path()).unwrap()
+        std::fs::read_dir(temp_dir.path())
+            .unwrap()
             .filter_map(Result::ok)
             .map(|e| e.file_name())
             .collect::<Vec<_>>()
@@ -1059,12 +1073,11 @@ packages:
 
     // Test the executable - this is the critical test
     println!("Running pnpm test executable to verify dependencies...");
-    let output = Command::new(&executable_path)
-        .output()?;
+    let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     println!("pnpm test stdout: {}", stdout);
     if !stderr.is_empty() {
         println!("pnpm test stderr: {}", stderr);
@@ -1077,22 +1090,22 @@ packages:
         output.status.code(),
         stderr
     );
-    
+
     assert!(
         stdout.contains("Hello from pnpm test app!"),
         "Expected greeting not found in pnpm test output"
     );
-    
+
     assert!(
         stdout.contains("Successfully loaded adm-zip:"),
         "Failed to load adm-zip dependency - this indicates the bundling didn't work correctly"
     );
-    
+
     assert!(
         stdout.contains("DEPENDENCY_TEST_PASSED"),
         "Dependency functionality test failed - adm-zip was loaded but not working correctly"
     );
-    
+
     assert!(
         stdout.contains("All tests passed!"),
         "Not all tests passed in the bundled application"
@@ -1103,13 +1116,14 @@ packages:
 }
 
 #[tokio::test]
+#[serial]
 async fn test_bundle_simple_project() {
     let temp_dir = TempDir::new().unwrap();
     let project_path = temp_dir.path().join("test-project");
-    
+
     // Create a simple Node.js project
     fs::create_dir_all(&project_path).unwrap();
-    
+
     let package_json = r#"{
         "name": "test-project",
         "version": "1.0.0",
@@ -1118,7 +1132,7 @@ async fn test_bundle_simple_project() {
             "commander": "^11.0.0"
         }
     }"#;
-    
+
     let index_js = r#"
         const { program } = require('commander');
         program
@@ -1130,19 +1144,19 @@ async fn test_bundle_simple_project() {
         program.parse();
         console.log('Test app executed successfully');
     "#;
-    
+
     fs::write(project_path.join("package.json"), package_json).unwrap();
     fs::write(project_path.join("index.js"), index_js).unwrap();
-    
+
     // Install dependencies using npm (simpler than pnpm for this test)
     let npm_install = Command::new("npm")
         .arg("install")
         .current_dir(&project_path)
         .output()
         .unwrap();
-    
+
     assert!(npm_install.status.success(), "npm install failed");
-    
+
     // Bundle the project (we'll use the CLI instead)
     let cargo_bin = env!("CARGO_BIN_EXE_banderole");
     let bundle_output = Command::new(cargo_bin)
@@ -1154,29 +1168,34 @@ async fn test_bundle_simple_project() {
         .arg("test-bundle")
         .output()
         .unwrap();
-    
-    assert!(bundle_output.status.success(), "Bundling failed: {:?}", String::from_utf8_lossy(&bundle_output.stderr));
-    
+
+    assert!(
+        bundle_output.status.success(),
+        "Bundling failed: {:?}",
+        String::from_utf8_lossy(&bundle_output.stderr)
+    );
+
     // Test that the bundle exists
     let bundle_path = temp_dir.path().join("test-bundle");
     assert!(bundle_path.exists(), "Bundle file not created");
-    
+
     // Note: Testing execution would require extracting and running the bundle,
     // which is complex in a test environment
 }
 
 #[tokio::test]
+#[serial]
 async fn test_pnpm_project_bundling() {
     // This test demonstrates that pnpm projects can be bundled
     // It would require a real pnpm project structure to test fully
-    
+
     let temp_dir = TempDir::new().unwrap();
     let project_path = temp_dir.path().join("pnpm-project");
-    
+
     // Create a minimal pnpm project structure
     fs::create_dir_all(&project_path).unwrap();
     fs::create_dir_all(project_path.join("node_modules/.pnpm")).unwrap();
-    
+
     let package_json = r#"{
         "name": "pnpm-test-project",
         "version": "1.0.0",
@@ -1185,15 +1204,15 @@ async fn test_pnpm_project_bundling() {
             "lodash": "^4.17.21"
         }
     }"#;
-    
+
     let index_js = r#"
         const _ = require('lodash');
         console.log('Lodash version:', _.VERSION);
     "#;
-    
+
     fs::write(project_path.join("package.json"), package_json).unwrap();
     fs::write(project_path.join("index.js"), index_js).unwrap();
-    
+
     // Create minimal pnpm-lock.yaml
     let pnpm_lock = r#"
 lockfileVersion: '6.0'
@@ -1206,9 +1225,9 @@ packages:
     resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
     dev: false
 "#;
-    
+
     fs::write(project_path.join("pnpm-lock.yaml"), pnpm_lock).unwrap();
-    
+
     // The bundling should handle the pnpm structure gracefully
     let cargo_bin = env!("CARGO_BIN_EXE_banderole");
     let result = Command::new(cargo_bin)
@@ -1220,13 +1239,16 @@ packages:
         .arg("pnpm-bundle")
         .output()
         .unwrap();
-    
+
     // Should not panic or fail catastrophically
     // May fail due to missing dependencies, but should handle pnpm structure
     if result.status.success() {
         println!("Pnpm bundling succeeded");
     } else {
-        println!("Pnpm bundling failed gracefully: {}", String::from_utf8_lossy(&result.stderr));
+        println!(
+            "Pnpm bundling failed gracefully: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 }
 
