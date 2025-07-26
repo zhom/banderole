@@ -67,7 +67,7 @@ pub async fn bundle_project(
     let output_path = resolve_output_path(output_path, &app_name, custom_name.as_deref())?;
 
     // 6. Ensure portable Node binary is available.
-    let node_downloader = NodeDownloader::new_with_persistent_cache(node_version.clone())?;
+    let node_downloader = NodeDownloader::new_with_persistent_cache(&node_version).await?;
     let node_executable = node_downloader.ensure_node_binary().await?;
     let node_root = node_executable
         .parent()

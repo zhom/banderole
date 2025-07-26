@@ -1,3 +1,4 @@
+use crate::node_version_manager::NodeVersionManager;
 use crate::platform::Platform;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -16,16 +17,39 @@ pub struct NodeDownloader {
     platform: Platform,
     cache_dir: PathBuf,
     node_version: String,
+    version_resolver: NodeVersionManager,
 }
 
 impl NodeDownloader {
-    pub fn new_with_persistent_cache(node_version: String) -> Result<Self> {
+    pub async fn new_with_persistent_cache(version_spec: &str) -> Result<Self> {
         let cache_dir = Self::get_persistent_cache_dir()?;
+        let version_resolver = NodeVersionManager::new();
+
+        // Resolve the version specification to a concrete version
+        let resolved_version = version_resolver
+            .resolve_version(version_spec)
+            .await
+            .context(format!(
+                "Failed to resolve Node.js version '{}'",
+                version_spec
+            ))?;
+
+        println!(
+            "Resolved '{}' to Node.js version {}",
+            version_spec, resolved_version
+        );
+
         Ok(Self {
             platform: Platform::current(),
             cache_dir,
-            node_version,
+            node_version: resolved_version,
+            version_resolver,
         })
+    }
+
+    /// Get the resolved Node.js version
+    pub fn get_version(&self) -> &str {
+        &self.node_version
     }
 
     fn get_persistent_cache_dir() -> Result<PathBuf> {

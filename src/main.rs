@@ -1,5 +1,6 @@
 mod bundler;
 mod node_downloader;
+mod node_version_manager;
 mod platform;
 
 use clap::{Parser, Subcommand};
