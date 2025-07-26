@@ -30,7 +30,7 @@ base64 = "0.22"
 reqwest = { version = "0.12", features = ["blocking"] }
 
 [dev-dependencies]
-serial_test = "*"
+serial_test = "3"
 
 [[test]]
 name = "integration_test"
