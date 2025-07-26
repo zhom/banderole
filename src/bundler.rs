@@ -1,12 +1,12 @@
+use crate::executable;
 use crate::node_downloader::NodeDownloader;
+use crate::node_version_manager::NodeVersionManager;
 use crate::platform::Platform;
 use anyhow::{Context, Result};
-use base64::Engine as _;
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 use zip::ZipWriter;
 
 /// Public entry-point used by `main.rs`.
@@ -23,8 +23,8 @@ pub async fn bundle_project(
     output_path: Option<PathBuf>,
     custom_name: Option<String>,
     no_compression: bool,
+    ignore_cached_versions: bool,
 ) -> Result<()> {
-    // 1. Validate & canonicalize input directory.
     let project_path = project_path
         .canonicalize()
         .context("Failed to resolve project path")?;
@@ -35,7 +35,6 @@ pub async fn bundle_project(
         project_path.display()
     );
 
-    // 2. Read `package.json` for name/version and detect project structure
     let package_content = fs::read_to_string(&pkg_json).context("Failed to read package.json")?;
     let package_value: Value =
         serde_json::from_str(&package_content).context("Failed to parse package.json")?;
@@ -48,11 +47,11 @@ pub async fn bundle_project(
             .to_string(),
     );
 
-    // 3. Determine the correct source directory to bundle
     let source_dir = determine_source_directory(&project_path, &package_value)?;
 
-    // 4. Determine Node version (via .nvmrc / .node-version or default to LTS 22.17.1).
-    let node_version = detect_node_version(&project_path).unwrap_or_else(|_| "22.17.1".into());
+    let node_version = detect_node_version_with_workspace_support(&project_path, ignore_cached_versions)
+        .await
+        .unwrap_or_else(|_| "22.17.1".into());
 
     println!(
         "Bundling {app_name} v{app_version} using Node.js v{node_version} for {plat}",
@@ -63,10 +62,8 @@ pub async fn bundle_project(
         println!("Using source directory: {}", source_dir.display());
     }
 
-    // 5. Resolve output path with collision handling
     let output_path = resolve_output_path(output_path, &app_name, custom_name.as_deref())?;
 
-    // 6. Ensure portable Node binary is available.
     let node_downloader = NodeDownloader::new_with_persistent_cache(&node_version).await?;
     let node_executable = node_downloader.ensure_node_binary().await?;
     let node_root = node_executable
@@ -75,7 +72,6 @@ pub async fn bundle_project(
         .parent()
         .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()));
 
-    // 7. Create an in-memory zip archive containing `/app` and `/node` directories.
     let mut zip_data: Vec<u8> = Vec::new();
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
@@ -87,19 +83,15 @@ pub async fn bundle_project(
                 .compression_level(Some(8))
         };
 
-        // Copy the determined source directory (excluding node_modules to avoid conflicts)
         add_dir_to_zip_excluding_node_modules(&mut zip, &source_dir, Path::new("app"), opts)?;
 
-        // Handle dependencies and package.json
         bundle_dependencies(&mut zip, &project_path, &source_dir, &package_value, opts)?;
 
-        // Copy Node runtime directory.
         add_dir_to_zip(&mut zip, node_root, Path::new("node"), opts)?;
         zip.finish()?;
     }
 
-    // 8. Build self-extracting launcher using a more reliable approach.
-    create_self_extracting_executable(&output_path, zip_data, &app_name)?;
+    executable::create_self_extracting_executable(&output_path, zip_data, &app_name)?;
 
     println!("Bundle created at {}", output_path.display());
     Ok(())
@@ -116,19 +108,16 @@ fn bundle_dependencies<W>(
 where
     W: Write + Read + std::io::Seek,
 {
-    // If we're using a subdirectory, copy the root package.json with adjusted paths
     if source_dir != project_path {
         let root_package_json = project_path.join("package.json");
         if root_package_json.exists() {
             zip.start_file("app/package.json", opts)?;
 
-            // Read and modify package.json to adjust the main path
             let content = fs::read_to_string(&root_package_json)
                 .context("Failed to read root package.json")?;
             let mut package_value: Value =
                 serde_json::from_str(&content).context("Failed to parse root package.json")?;
 
-            // Adjust the main field if it points to the source directory
             if let Some(main) = package_value["main"].as_str() {
                 let main_path = project_path.join(main);
                 if let Ok(relative_to_source) = main_path.strip_prefix(&source_dir) {
@@ -143,17 +132,14 @@ where
         }
     }
 
-    // Find and bundle dependencies with improved package manager support
     let deps_result = find_and_bundle_dependencies(zip, project_path, opts)?;
 
-    // Log the result
     if deps_result.dependencies_found {
         println!("Bundled dependencies: {}", deps_result.source_description);
     } else {
         println!("Warning: No dependencies found to bundle");
     }
 
-    // Log any warnings
     for warning in &deps_result.warnings {
         println!("Warning: {}", warning);
     }
@@ -183,9 +169,7 @@ where
     if project_node_modules.exists() {
         let package_manager = detect_package_manager(&project_node_modules, project_path);
 
-        // Check if this is a pnpm workspace (symlinks to parent .pnpm)
         let is_pnpm_workspace = if package_manager == PackageManager::Pnpm {
-            // Check if the pnpm structure points to a parent directory
             if let Ok(entries) = fs::read_dir(&project_node_modules) {
                 entries.flatten().any(|entry| {
                     if entry.file_type().ok().map_or(false, |ft| ft.is_symlink()) {
@@ -206,11 +190,9 @@ where
             false
         };
 
-        // If it's a pnpm workspace, skip local bundling and go to workspace detection
         if !is_pnpm_workspace {
             match package_manager {
                 PackageManager::Pnpm => {
-                    // For local pnpm, bundle both node_modules and .pnpm if it exists
                     bundle_pnpm_dependencies(zip, project_path, opts)?;
                     return Ok(DependenciesResult {
                         dependencies_found: true,
@@ -219,7 +201,6 @@ where
                     });
                 }
                 PackageManager::Yarn => {
-                    // For yarn, bundle node_modules with comprehensive dependency resolution
                     bundle_node_modules_comprehensive(
                         zip,
                         &project_node_modules,
@@ -233,7 +214,6 @@ where
                     });
                 }
                 PackageManager::Npm | PackageManager::Unknown => {
-                    // For npm or unknown, use comprehensive bundling
                     bundle_node_modules_comprehensive(
                         zip,
                         &project_node_modules,
@@ -257,10 +237,8 @@ where
         let parent_package_json = parent_path.join("package.json");
 
         if parent_node_modules.exists() && parent_package_json.exists() {
-            // Check if this is a workspace root
             let mut is_workspace = false;
 
-            // Check package.json for workspace configuration
             if let Ok(content) = fs::read_to_string(&parent_package_json) {
                 if let Ok(pkg_value) = serde_json::from_str::<Value>(&content) {
                     is_workspace = pkg_value["workspaces"].is_array()
@@ -269,7 +247,6 @@ where
                 }
             }
 
-            // Check for pnpm-workspace.yaml
             let pnpm_workspace_yaml = parent_path.join("pnpm-workspace.yaml");
             if !is_workspace && pnpm_workspace_yaml.exists() {
                 is_workspace = true;
@@ -318,7 +295,6 @@ where
 
         current_path = parent_path.parent();
 
-        // Don't go too far up the directory tree
         if parent_path.components().count() < 2 {
             break;
         }
@@ -341,12 +317,10 @@ enum PackageManager {
 
 /// Detect the package manager based on the node_modules structure and lockfiles
 fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> PackageManager {
-    // Check for pnpm-specific structure
     if node_modules_path.join(".pnpm").exists() {
         return PackageManager::Pnpm;
     }
 
-    // Check if this is a pnpm workspace (symlinks pointing to parent .pnpm)
     if node_modules_path.exists() {
         if let Ok(entries) = fs::read_dir(node_modules_path) {
             for entry in entries.flatten() {
@@ -362,7 +336,6 @@ fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> Pack
         }
     }
 
-    // Check for lockfiles in the project directory
     if project_path.join("pnpm-lock.yaml").exists() {
         return PackageManager::Pnpm;
     }
@@ -391,17 +364,14 @@ where
     let pnpm_dir = node_modules_path.join(".pnpm");
 
     if !pnpm_dir.exists() {
-        // If no .pnpm directory, fall back to simple copy
         if node_modules_path.exists() {
             add_dir_to_zip_no_follow(zip, &node_modules_path, Path::new("app/node_modules"), opts)?;
         }
         return Ok(());
     }
 
-    // For pnpm, use a smarter approach that only includes actually needed packages
     let mut packages_to_bundle = std::collections::HashSet::new();
 
-    // Start with direct dependencies from package.json
     let package_json_path = project_path.join("package.json");
     if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
         if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
@@ -415,7 +385,6 @@ where
         }
     }
 
-    // Recursively resolve dependencies for each package
     let mut resolved_packages = std::collections::HashSet::new();
     for package_name in &packages_to_bundle {
         resolve_package_dependencies(
@@ -432,10 +401,8 @@ where
         resolved_packages.len()
     );
 
-    // Ensure app/node_modules directory exists
     zip.add_directory("app/node_modules/", opts)?;
 
-    // Copy each resolved package
     for package_name in &resolved_packages {
         if let Err(e) =
             copy_pnpm_package_comprehensive(zip, &node_modules_path, &pnpm_dir, package_name, opts)
@@ -444,13 +411,11 @@ where
         }
     }
 
-    // Copy .bin directory if it exists
     let bin_dir = node_modules_path.join(".bin");
     if bin_dir.exists() {
         add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
     }
 
-    // Copy important pnpm metadata files
     let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
     for file_name in important_files {
         let file_path = node_modules_path.join(file_name);
@@ -478,14 +443,12 @@ fn resolve_package_dependencies(
         return Ok(());
     }
 
-    // If already resolved, skip
     if resolved.contains(package_name) {
         return Ok(());
     }
 
     resolved.insert(package_name.to_string());
 
-    // Try to find the package and read its package.json
     let package_json_content =
         match find_package_json_content(node_modules_path, pnpm_dir, package_name) {
             Ok(content) => content,
@@ -493,7 +456,6 @@ fn resolve_package_dependencies(
         };
 
     if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
-        // Add production dependencies
         if let Some(deps) = package_json["dependencies"].as_object() {
             for dep_name in deps.keys() {
                 resolve_package_dependencies(
@@ -506,10 +468,8 @@ fn resolve_package_dependencies(
             }
         }
 
-        // Also include peerDependencies that are actually installed
         if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
             for dep_name in peer_deps.keys() {
-                // Only include if it actually exists
                 if package_exists_in_pnpm(node_modules_path, pnpm_dir, dep_name) {
                     resolve_package_dependencies(
                         node_modules_path,
@@ -522,10 +482,8 @@ fn resolve_package_dependencies(
             }
         }
 
-        // Also include optionalDependencies that are actually installed (important for native bindings)
         if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
             for dep_name in optional_deps.keys() {
-                // Only include if it actually exists
                 if package_exists_in_pnpm(node_modules_path, pnpm_dir, dep_name) {
                     resolve_package_dependencies(
                         node_modules_path,
@@ -548,7 +506,6 @@ fn find_package_json_content(
     pnpm_dir: &Path,
     package_name: &str,
 ) -> Result<String> {
-    // First try top-level
     let top_level_package = node_modules_path.join(package_name);
     if top_level_package.exists() {
         let target_path = if top_level_package.is_symlink() {
@@ -572,7 +529,6 @@ fn find_package_json_content(
         }
     }
 
-    // Try .pnpm directory
     for entry in fs::read_dir(pnpm_dir)? {
         let entry = entry?;
         let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
@@ -594,12 +550,10 @@ fn find_package_json_content(
 
 /// Check if a package exists in the pnpm structure
 fn package_exists_in_pnpm(node_modules_path: &Path, pnpm_dir: &Path, package_name: &str) -> bool {
-    // Check top-level
     if node_modules_path.join(package_name).exists() {
         return true;
     }
 
-    // Check .pnpm
     if let Ok(entries) = fs::read_dir(pnpm_dir) {
         for entry in entries.flatten() {
             let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
@@ -616,21 +570,15 @@ fn package_exists_in_pnpm(node_modules_path: &Path, pnpm_dir: &Path, package_nam
 
 /// Extract package name from pnpm directory name (e.g., "adm-zip@0.5.16" -> "adm-zip")
 fn extract_package_name_from_pnpm(pnpm_name: &str) -> Option<String> {
-    // Handle scoped packages like "@sindresorhus+is@4.6.0" -> "@sindresorhus/is"
     if pnpm_name.starts_with('@') {
         if let Some(at_pos) = pnpm_name.rfind('@') {
             if at_pos > 0 {
-                // Make sure it's not the first @
                 let package_part = &pnpm_name[..at_pos];
-                // Convert + back to / for scoped packages
                 return Some(package_part.replace('+', "/"));
             }
         }
-        // If no version found, just convert + to /
         return Some(pnpm_name.replace('+', "/"));
     }
-
-    // Handle regular packages like "adm-zip@0.5.16"
     if let Some(at_pos) = pnpm_name.find('@') {
         Some(pnpm_name[..at_pos].to_string())
     } else {
@@ -651,11 +599,9 @@ where
 {
     let dest_path = Path::new("app/node_modules").join(package_name);
 
-    // First try to find it as a top-level package
     let top_level_package = node_modules_path.join(package_name);
     if top_level_package.exists() {
         let target_path = if top_level_package.is_symlink() {
-            // Follow the symlink
             let target = fs::read_link(&top_level_package)?;
             if target.is_absolute() {
                 target
@@ -675,13 +621,9 @@ where
             return Ok(());
         }
     }
-
-    // If not found at top level, search in .pnpm directory
     for entry in fs::read_dir(pnpm_dir)? {
         let entry = entry?;
         let pnpm_package_name = entry.file_name().to_string_lossy().to_string();
-
-        // Check if this .pnpm entry matches our package name
         if let Some(extracted_name) = extract_package_name_from_pnpm(&pnpm_package_name) {
             if extracted_name == package_name {
                 let pnpm_package_path = entry.path().join("node_modules").join(package_name);
@@ -713,7 +655,6 @@ where
 {
     let mut packages_to_bundle = std::collections::HashSet::new();
 
-    // Start with direct dependencies from package.json
     let package_json_path = project_path.join("package.json");
     if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
         if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
@@ -722,7 +663,6 @@ where
                     packages_to_bundle.insert(dep_name.clone());
                 }
             }
-            // Also include peerDependencies and optionalDependencies
             if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
                 for dep_name in peer_deps.keys() {
                     packages_to_bundle.insert(dep_name.clone());
@@ -736,10 +676,8 @@ where
         }
     }
 
-    // Check if this is a pnpm setup
     let pnpm_dir = node_modules_path.join(".pnpm");
     if pnpm_dir.exists() {
-        // Use pnpm-specific resolution
         let mut resolved_packages = std::collections::HashSet::new();
         for package_name in &packages_to_bundle {
             resolve_package_dependencies(
@@ -756,10 +694,8 @@ where
             resolved_packages.len()
         );
 
-        // Ensure app/node_modules directory exists
         zip.add_directory("app/node_modules/", opts)?;
 
-        // Copy each resolved package using pnpm logic
         for package_name in &resolved_packages {
             if let Err(e) = copy_pnpm_package_comprehensive(
                 zip,
@@ -772,7 +708,6 @@ where
             }
         }
     } else {
-        // Use regular workspace resolution for non-pnpm setups
         let mut resolved_packages = std::collections::HashSet::new();
         for package_name in &packages_to_bundle {
             resolve_workspace_dependencies(
@@ -788,10 +723,8 @@ where
             resolved_packages.len()
         );
 
-        // Ensure app/node_modules directory exists
         zip.add_directory("app/node_modules/", opts)?;
 
-        // Copy each resolved package using workspace logic
         for package_name in &resolved_packages {
             if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
                 println!("Warning: Failed to copy package {}: {}", package_name, e);
@@ -799,13 +732,11 @@ where
         }
     }
 
-    // Copy .bin directory if it exists
     let bin_dir = node_modules_path.join(".bin");
     if bin_dir.exists() {
         add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
     }
 
-    // Copy important metadata files
     let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
     for file_name in important_files {
         let file_path = node_modules_path.join(file_name);
@@ -833,7 +764,6 @@ where
 {
     let mut packages_to_bundle = std::collections::HashSet::new();
 
-    // Read dependencies from the ACTUAL PROJECT being bundled, not the workspace root
     let package_json_path = project_path.join("package.json");
     if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
         if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
@@ -842,7 +772,6 @@ where
                     packages_to_bundle.insert(dep_name.clone());
                 }
             }
-            // Also include peerDependencies and optionalDependencies
             if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
                 for dep_name in peer_deps.keys() {
                     packages_to_bundle.insert(dep_name.clone());
@@ -856,7 +785,6 @@ where
         }
     }
 
-    // Recursively resolve dependencies for each package using workspace-specific logic
     let mut resolved_packages = std::collections::HashSet::new();
     for package_name in &packages_to_bundle {
         resolve_workspace_dependencies(
@@ -872,23 +800,19 @@ where
         resolved_packages.len()
     );
 
-    // Ensure app/node_modules directory exists
     zip.add_directory("app/node_modules/", opts)?;
 
-    // Copy each resolved package using workspace-specific copying
     for package_name in &resolved_packages {
         if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
             println!("Warning: Failed to copy package {}: {}", package_name, e);
         }
     }
 
-    // Copy .bin directory if it exists
     let bin_dir = node_modules_path.join(".bin");
     if bin_dir.exists() {
         add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
     }
 
-    // Copy important workspace metadata files if they exist
     let important_files = [".modules.yaml"];
     for file_name in important_files {
         let file_path = node_modules_path.join(file_name);
@@ -915,7 +839,6 @@ where
 {
     let mut packages_to_bundle = std::collections::HashSet::new();
 
-    // Read dependencies from the ACTUAL PROJECT being bundled, not the workspace root
     let package_json_path = project_path.join("package.json");
     if let Ok(package_json_content) = fs::read_to_string(&package_json_path) {
         if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
@@ -924,7 +847,6 @@ where
                     packages_to_bundle.insert(dep_name.clone());
                 }
             }
-            // Also include peerDependencies and optionalDependencies
             if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
                 for dep_name in peer_deps.keys() {
                     packages_to_bundle.insert(dep_name.clone());
@@ -938,7 +860,6 @@ where
         }
     }
 
-    // Recursively resolve dependencies for each package using pnpm-specific logic
     let mut resolved_packages = std::collections::HashSet::new();
     for package_name in &packages_to_bundle {
         resolve_package_dependencies(
@@ -958,7 +879,6 @@ where
     // Ensure app/node_modules directory exists
     zip.add_directory("app/node_modules/", opts)?;
 
-    // Copy each resolved package using pnpm-specific copying
     for package_name in &resolved_packages {
         if let Err(e) = copy_pnpm_package_comprehensive(
             zip,
@@ -971,13 +891,11 @@ where
         }
     }
 
-    // Copy .bin directory if it exists
     let bin_dir = parent_path.join("node_modules").join(".bin");
     if bin_dir.exists() {
         add_dir_to_zip_no_follow(zip, &bin_dir, Path::new("app/node_modules/.bin"), opts)?;
     }
 
-    // Copy important pnpm metadata files
     let important_files = [".modules.yaml", ".pnpm-workspace-state-v1.json"];
     for file_name in important_files {
         let file_path = parent_path.join("node_modules").join(file_name);
@@ -992,30 +910,82 @@ where
     Ok(())
 }
 
-/// Very lightweight Node version detection.
-fn detect_node_version(project_path: &Path) -> Result<String> {
-    for file in [".nvmrc", ".node-version"] {
-        let path = project_path.join(file);
-        if path.exists() {
-            let v = fs::read_to_string(&path)?;
-            return Ok(normalize_node_version(v.trim()));
-        }
-    }
-    anyhow::bail!("Node version not found")
+/// Enhanced Node version detection with workspace support and version resolution.
+async fn detect_node_version_with_workspace_support(
+    project_path: &Path,
+    ignore_cached_versions: bool,
+) -> Result<String> {
+    let version_manager = NodeVersionManager::new();
+    let version_spec = find_node_version_spec(project_path)?;
+    
+    version_manager.resolve_version(&version_spec, ignore_cached_versions).await
 }
 
-fn normalize_node_version(raw: &str) -> String {
-    raw.trim_start_matches('v').to_owned()
+/// Find Node version specification from .nvmrc or .node-version files,
+/// supporting workspace packages (parent/package, parent/packages/package patterns)
+fn find_node_version_spec(project_path: &Path) -> Result<String> {
+    let mut current_path = project_path;
+    
+    loop {
+        for file in [".nvmrc", ".node-version"] {
+            let version_file = current_path.join(file);
+            if version_file.exists() {
+                let content = fs::read_to_string(&version_file)
+                    .with_context(|| format!("Failed to read {}", version_file.display()))?;
+                let version_spec = content.trim();
+                if !version_spec.is_empty() {
+                    return Ok(normalize_node_version_spec(version_spec));
+                }
+            }
+        }
+        
+        if is_workspace_root(current_path) || current_path.parent().is_none() {
+            break;
+        }
+        
+        current_path = current_path.parent().unwrap();
+    }
+    
+    anyhow::bail!("Node version specification not found in project or workspace hierarchy")
+}
+
+/// Check if a directory is a workspace root (contains workspace configuration)
+fn is_workspace_root(path: &Path) -> bool {
+    let workspace_files = [
+        "pnpm-workspace.yaml",
+        "lerna.json",
+        "rush.json",
+        "nx.json",
+    ];
+    
+    for file in workspace_files {
+        if path.join(file).exists() {
+            return true;
+        }
+    }
+    
+    if let Ok(package_json_content) = fs::read_to_string(path.join("package.json")) {
+        if let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&package_json_content) {
+            if package_json.get("workspaces").is_some() {
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+/// Normalize a Node version specification (remove 'v' prefix, handle various formats)
+fn normalize_node_version_spec(raw: &str) -> String {
+    raw.trim().trim_start_matches('v').to_owned()
 }
 
 /// Determine the correct source directory to bundle for the project.
 /// This handles TypeScript projects and other build configurations.
 fn determine_source_directory(project_path: &Path, package_json: &Value) -> Result<PathBuf> {
-    // Check if there's a specific main entry point that indicates a built project
     if let Some(main) = package_json["main"].as_str() {
         let main_path = project_path.join(main);
         if let Some(parent) = main_path.parent() {
-            // If main points to a file in a subdirectory like dist/index.js or build/index.js
             let parent_name = parent
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1027,7 +997,6 @@ fn determine_source_directory(project_path: &Path, package_json: &Value) -> Resu
         }
     }
 
-    // Check for TypeScript configuration
     let tsconfig_path = project_path.join("tsconfig.json");
     if tsconfig_path.exists() {
         if let Ok(tsconfig) = read_tsconfig(&tsconfig_path) {
@@ -1040,18 +1009,15 @@ fn determine_source_directory(project_path: &Path, package_json: &Value) -> Resu
         }
     }
 
-    // Check for common build output directories
     for dir_name in ["dist", "build", "lib", "out"] {
         let dir_path = project_path.join(dir_name);
         if dir_path.exists() && dir_path.is_dir() {
-            // Verify it contains JavaScript files or a package.json
             if contains_js_files(&dir_path) || dir_path.join("package.json").exists() {
                 return Ok(dir_path);
             }
         }
     }
 
-    // Default to the project root
     Ok(project_path.to_path_buf())
 }
 
@@ -1059,7 +1025,6 @@ fn determine_source_directory(project_path: &Path, package_json: &Value) -> Resu
 fn read_tsconfig(tsconfig_path: &Path) -> Result<Value> {
     let content = fs::read_to_string(tsconfig_path).context("Failed to read tsconfig.json")?;
 
-    // Remove comments for JSON parsing (simple approach)
     let cleaned_content = content
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -1069,16 +1034,13 @@ fn read_tsconfig(tsconfig_path: &Path) -> Result<Value> {
     let mut config: Value =
         serde_json::from_str(&cleaned_content).context("Failed to parse tsconfig.json")?;
 
-    // Handle extends configuration
     if let Some(extends) = config["extends"].as_str() {
         let base_path = if extends.starts_with('.') {
             tsconfig_path.parent().unwrap().join(extends)
         } else {
-            // Could be a package reference, but for now we'll skip
             return Ok(config);
         };
 
-        // Add .json extension if not present
         let base_path = if base_path.extension().is_none() {
             base_path.with_extension("json")
         } else {
@@ -1087,7 +1049,6 @@ fn read_tsconfig(tsconfig_path: &Path) -> Result<Value> {
 
         if base_path.exists() {
             if let Ok(base_config) = read_tsconfig(&base_path) {
-                // Merge base config with current config (simple merge)
                 if let (Some(base_obj), Some(current_obj)) =
                     (base_config.as_object(), config.as_object())
                 {
@@ -1125,7 +1086,6 @@ fn resolve_output_path(
     custom_name: Option<&str>,
 ) -> Result<PathBuf> {
     if let Some(path) = output_path {
-        // If explicit output path is provided, use it as-is
         return Ok(path);
     }
 
@@ -1137,18 +1097,15 @@ fn resolve_output_path(
     let base_name = custom_name.unwrap_or(app_name);
     let mut output_path = PathBuf::from(format!("{base_name}{ext}"));
 
-    // Check for conflicts and resolve them
     let mut counter = 1;
     while output_path.exists() {
         if output_path.is_dir() {
-            // If it's a directory, append a suffix
             output_path = PathBuf::from(format!("{base_name}-bundle{ext}"));
             if !output_path.exists() {
                 break;
             }
         }
 
-        // If it still exists (file or another directory), add a counter
         if output_path.exists() {
             output_path = PathBuf::from(format!("{base_name}-bundle-{counter}{ext}"));
             counter += 1;
@@ -1162,272 +1119,6 @@ fn resolve_output_path(
 // Self-extracting executable generation using a more reliable approach
 // ────────────────────────────────────────────────────────────────────────────
 
-fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, _app_name: &str) -> Result<()> {
-    let build_id = Uuid::new_v4();
-
-    if Platform::current().is_windows() {
-        create_windows_executable(out, zip_data, &build_id.to_string())
-    } else {
-        create_unix_executable(out, zip_data, &build_id.to_string())
-    }
-}
-
-fn create_unix_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut file = fs::File::create(out).context("Failed to create output executable")?;
-
-    let script = format!(
-        r#"#!/bin/bash
-set -e
-
-if [ -n "$XDG_CACHE_HOME" ]; then
-    CACHE_DIR="$XDG_CACHE_HOME/banderole"
-elif [ -n "$HOME" ]; then
-    CACHE_DIR="$HOME/.cache/banderole"
-else
-    CACHE_DIR="/tmp/banderole-cache"
-fi
-
-APP_DIR="$CACHE_DIR/{}"
-READY_FILE="$APP_DIR/.ready"
-
-run_app() {{
-    cd "$APP_DIR/app" || exit 1
-    
-    # Find main script from package.json
-    MAIN_SCRIPT=$("$APP_DIR/node/bin/node" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2>/dev/null || echo "index.js")
-    
-    if [ -f "$MAIN_SCRIPT" ]; then
-        exec "$APP_DIR/node/bin/node" "$MAIN_SCRIPT" "$@"
-    else
-        echo "Error: Main script '$MAIN_SCRIPT' not found" >&2
-        exit 1
-    fi
-}}
-
-if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-    run_app "$@"
-fi
-
-mkdir -p "$CACHE_DIR" 2>/dev/null || true
-
-ATTEMPTS=0
-MAX_ATTEMPTS=30
-
-while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-    if mkdir "$APP_DIR" 2>/dev/null; then
-        
-        TEMP_ZIP=$(mktemp) || exit 1
-        trap 'rm -f "$TEMP_ZIP"' EXIT
-        
-        awk '/^__DATA__$/{{p=1;next}} p{{print}}' "$0" | base64 -d > "$TEMP_ZIP"
-        
-        if [ ! -s "$TEMP_ZIP" ]; then
-            echo "Error: Failed to extract bundle data" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        if ! unzip -q "$TEMP_ZIP" -d "$APP_DIR" 2>/dev/null; then
-            echo "Error: Failed to extract bundle" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        if [ ! -f "$APP_DIR/app/package.json" ] || [ ! -x "$APP_DIR/node/bin/node" ]; then
-            echo "Error: Bundle extraction incomplete" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        touch "$READY_FILE"
-        
-        run_app "$@"
-    else
-        if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-            run_app "$@"
-        fi
-        
-        ATTEMPTS=$((ATTEMPTS + 1))
-        if [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; then
-            DELAY=$(awk "BEGIN {{print int(100 * (2 ^ (($ATTEMPTS - 1) / 3)) + 0.5)}}" 2>/dev/null || echo 100)
-            if [ "$DELAY" -gt 1000 ]; then
-                DELAY=1000
-            fi
-            sleep $(awk "BEGIN {{print $DELAY / 1000}}" 2>/dev/null || echo 0.1)
-        fi
-    fi
-done
-
-# If we've exhausted retries, exit with error
-echo "Error: Failed to extract or run application after $MAX_ATTEMPTS attempts" >&2
-exit 1
-
-__DATA__
-"#,
-        build_id
-    );
-
-    file.write_all(script.as_bytes())?;
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
-    file.write_all(encoded.as_bytes())?;
-    file.write_all(b"\n")?;
-
-    let mut perms = file.metadata()?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(out, perms)?;
-
-    Ok(())
-}
-
-fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
-    let mut file = fs::File::create(out).context("Failed to create output executable")?;
-
-    let script = format!(
-        r#"@echo off
-setlocal enabledelayedexpansion
-
-set "CACHE_DIR=%LOCALAPPDATA%\banderole"
-set "APP_DIR=!CACHE_DIR!\{}"
-set "LOCK_FILE=!APP_DIR!\.lock"
-set "READY_FILE=!APP_DIR!\.ready"
-set "QUEUE_DIR=!APP_DIR!\.queue"
-set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
-
-:run_app
-cd /d "!APP_DIR!\app"
-
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
-if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
-
-if exist "!MAIN_SCRIPT!" (
-    "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
-    exit /b !errorlevel!
-) else (
-    echo Error: Main script '!MAIN_SCRIPT!' not found >&2
-    exit /b 1
-)
-
-:cleanup_queue
-if defined QUEUE_ENTRY if exist "!QUEUE_ENTRY!" (
-    del "!QUEUE_ENTRY!" 2>nul
-)
-exit /b
-
-if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
-    goto run_app
-)
-if not exist "!QUEUE_DIR!" mkdir "!QUEUE_DIR!" 2>nul
-set "QUEUE_ENTRY=!QUEUE_DIR!\%RANDOM%-%TIME:~6,5%.queue"
-echo %RANDOM% > "!QUEUE_ENTRY!"
-
-:acquire_lock
-if not exist "!LOCK_FILE!" (
-    mkdir "!LOCK_FILE!" 2>nul
-    if !errorlevel! equ 0 (
-        echo !RANDOM! > "!EXTRACTION_PID_FILE!"
-        goto extract
-    )
-)
-:wait_for_ready
-if exist "!READY_FILE!" (
-    :wait_queue_turn
-    if not exist "!QUEUE_ENTRY!" goto run_app
-    if exist "!READY_FILE!" goto run_app
-    
-    timeout /t 1 /nobreak >nul 2>&1
-    goto wait_queue_turn
-)
-
-if exist "!EXTRACTION_PID_FILE!" (
-    timeout /t 1 /nobreak >nul 2>&1
-    goto wait_for_ready
-) else (
-    goto acquire_lock
-)
-
-:extract
-if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
-    call :cleanup_queue
-    rmdir "!LOCK_FILE!" 2>nul
-    goto run_app
-)
-
-if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
-if not exist "!APP_DIR!" mkdir "!APP_DIR!"
-
-set "TEMP_ZIP=%TEMP%\banderole-bundle-%RANDOM%.zip"
-powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('%TEMP_ZIP%', [System.Convert]::FromBase64String($data))"
-
-if not exist "%TEMP_ZIP%" (
-    echo Error: Failed to extract bundle data >&2
-    call :cleanup_queue
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-powershell -NoProfile -Command "try {{ Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
-set "EXTRACT_RESULT=!errorlevel!"
-del "%TEMP_ZIP%" 2>nul
-
-if !EXTRACT_RESULT! neq 0 (
-    echo Error: Failed to extract bundle >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-if not exist "!APP_DIR!\app\package.json" (
-    echo Error: Bundle extraction incomplete >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-if not exist "!APP_DIR!\node\node.exe" (
-    echo Error: Node.js executable not found >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-echo ready > "!READY_FILE!"
-
-if exist "!QUEUE_DIR!" (
-    for %%f in ("!QUEUE_DIR!\*.queue") do (
-        if exist "%%f" del "%%f" 2>nul
-    )
-)
-
-del "!EXTRACTION_PID_FILE!" 2>nul
-call :cleanup_queue
-
-rmdir "!LOCK_FILE!" 2>nul
-
-goto run_app
-
-__DATA__
-"#,
-        build_id
-    );
-
-    file.write_all(script.as_bytes())?;
-
-    // Append base64-encoded zip data
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
-    file.write_all(encoded.as_bytes())?;
-
-    Ok(())
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Utility helpers
@@ -1453,12 +1144,10 @@ where
             continue;
         }
 
-        // Process regular files and symlinks, skip other special files
         if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
             continue;
         }
 
-        // Get file permissions to preserve executable bits (Unix only)
         let file_opts = {
             #[cfg(unix)]
             {
@@ -1502,12 +1191,10 @@ where
             continue;
         }
 
-        // Process regular files and symlinks, skip other special files
         if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
             continue;
         }
 
-        // Get file permissions to preserve executable bits (Unix only)
         let file_opts = {
             #[cfg(unix)]
             {
@@ -1526,14 +1213,11 @@ where
         zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
 
         if entry.file_type().is_symlink() {
-            // For symlinks, read the target and store it as file content
-            // This won't create actual symlinks but avoids infinite loops
             if let Ok(target) = fs::read_link(path) {
                 let target_str = target.to_string_lossy();
                 zip.write_all(target_str.as_bytes())?;
             }
         } else {
-            // For regular files, read the content
             let data = fs::read(path).context("Failed to read file while zipping")?;
             zip.write_all(&data)?;
         }
@@ -1558,19 +1242,16 @@ where
         let zip_path = dest_dir.join(rel_path);
 
         if entry.file_type().is_dir() {
-            // Only create subdirectories within the package, not the main app/node_modules path
             if !rel_path.as_os_str().is_empty() {
                 zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
             }
             continue;
         }
 
-        // Process regular files and symlinks, skip other special files
         if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
             continue;
         }
 
-        // Get file permissions to preserve executable bits (Unix only)
         let file_opts = {
             #[cfg(unix)]
             {
@@ -1589,14 +1270,11 @@ where
         zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
 
         if entry.file_type().is_symlink() {
-            // For symlinks, read the target and store it as file content
-            // This won't create actual symlinks but avoids infinite loops
             if let Ok(target) = fs::read_link(path) {
                 let target_str = target.to_string_lossy();
                 zip.write_all(target_str.as_bytes())?;
             }
         } else {
-            // For regular files, read the content
             let data = fs::read(path).context("Failed to read file while zipping")?;
             zip.write_all(&data)?;
         }
@@ -1620,7 +1298,6 @@ where
         let rel_path = path.strip_prefix(src_dir).unwrap();
         let zip_path = dest_dir.join(rel_path);
 
-        // Exclude node_modules from the source directory
         if rel_path.starts_with("node_modules") {
             continue;
         }
@@ -1630,12 +1307,10 @@ where
             continue;
         }
 
-        // Process regular files and symlinks, skip other special files
         if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
             continue;
         }
 
-        // Get file permissions to preserve executable bits (Unix only)
         let file_opts = {
             #[cfg(unix)]
             {
@@ -1708,14 +1383,12 @@ fn resolve_workspace_dependencies(
         return Ok(());
     }
 
-    // If already resolved, skip
     if resolved.contains(package_name) {
         return Ok(());
     }
 
     resolved.insert(package_name.to_string());
 
-    // Try to find the package and read its package.json
     let package_path = node_modules_path.join(package_name);
     let package_json_path = if package_path.is_symlink() {
         let target = fs::read_link(&package_path)?;
@@ -1737,14 +1410,12 @@ fn resolve_workspace_dependencies(
         fs::read_to_string(&package_json_path).context("Failed to read package.json")?;
 
     if let Ok(package_json) = serde_json::from_str::<Value>(&package_json_content) {
-        // Add production dependencies
         if let Some(deps) = package_json["dependencies"].as_object() {
             for dep_name in deps.keys() {
                 resolve_workspace_dependencies(node_modules_path, dep_name, resolved, depth + 1)?;
             }
         }
 
-        // Also include peerDependencies that are actually installed
         if let Some(peer_deps) = package_json["peerDependencies"].as_object() {
             for dep_name in peer_deps.keys() {
                 let dep_path = node_modules_path.join(dep_name);
@@ -1759,7 +1430,6 @@ fn resolve_workspace_dependencies(
             }
         }
 
-        // Also include optionalDependencies that are actually installed
         if let Some(optional_deps) = package_json["optionalDependencies"].as_object() {
             for dep_name in optional_deps.keys() {
                 let dep_path = node_modules_path.join(dep_name);
