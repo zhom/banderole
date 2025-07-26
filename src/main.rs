@@ -1,4 +1,5 @@
 mod bundler;
+mod executable;
 mod node_downloader;
 mod node_version_manager;
 mod platform;
@@ -33,6 +34,9 @@ enum Commands {
         /// Disable compression for faster bundling (useful for testing)
         #[arg(long)]
         no_compression: bool,
+        /// Ignore cached version resolution results
+        #[arg(long)]
+        ignore_cached_versions: bool,
     },
 }
 
@@ -46,8 +50,9 @@ async fn main() -> anyhow::Result<()> {
             output,
             name,
             no_compression,
+            ignore_cached_versions,
         } => {
-            bundler::bundle_project(path, output, name, no_compression).await?;
+            bundler::bundle_project(path, output, name, no_compression, ignore_cached_versions).await?;
         }
     }
 

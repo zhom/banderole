@@ -27,7 +27,7 @@ impl NodeDownloader {
 
         // Resolve the version specification to a concrete version
         let resolved_version = version_resolver
-            .resolve_version(version_spec)
+            .resolve_version(version_spec, false)
             .await
             .context(format!(
                 "Failed to resolve Node.js version '{}'",

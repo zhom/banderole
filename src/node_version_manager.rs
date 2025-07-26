@@ -27,7 +27,7 @@ impl VersionCache {
         Self {
             versions: Vec::new(),
             last_updated: None,
-            cache_duration: Duration::from_secs(3600), // 1 hour
+            cache_duration: Duration::from_secs(86400), // 1 day
         }
     }
 
@@ -87,15 +87,6 @@ impl ParsedVersion {
 
         true
     }
-
-    pub fn to_string(&self) -> String {
-        match (self.minor, self.patch) {
-            (Some(minor), Some(patch)) => format!("{}.{}.{}", self.major, minor, patch),
-            (Some(minor), None) => format!("{}.{}", self.major, minor),
-            (None, None) => format!("{}", self.major),
-            (None, Some(_)) => unreachable!("Cannot have patch without minor"),
-        }
-    }
 }
 
 impl PartialOrd for ParsedVersion {
@@ -144,8 +135,8 @@ impl NodeVersionManager {
     }
 
     /// Resolve a version specification like "23", "23.5", "v22.1.0" to a complete version
-    pub async fn resolve_version(&self, version_spec: &str) -> Result<String> {
-        let versions = self.fetch_versions().await?;
+    pub async fn resolve_version(&self, version_spec: &str, ignore_cached_versions: bool) -> Result<String> {
+        let versions = self.fetch_versions(ignore_cached_versions).await?;
         let parsed_spec = self.parse_version_spec(version_spec)?;
 
         let matching_versions = self.find_matching_versions(&versions, &parsed_spec);
@@ -154,46 +145,22 @@ impl NodeVersionManager {
             anyhow::bail!("No Node.js version found matching '{}'", version_spec);
         }
 
-        // Return the latest matching version
         let latest = matching_versions.last().unwrap();
         Ok(latest.version.trim_start_matches('v').to_string())
     }
 
-    /// Get the latest version for a major version (e.g., latest v23.x.x)
-    pub async fn get_latest_for_major(&self, major: u32) -> Result<String> {
-        self.resolve_version(&major.to_string()).await
-    }
-
-    /// List all available versions matching a pattern
-    pub async fn list_versions(&self, pattern: Option<&str>) -> Result<Vec<String>> {
-        let versions = self.fetch_versions().await?;
-
-        let filtered_versions = if let Some(pattern) = pattern {
-            let parsed_spec = self.parse_version_spec(pattern)?;
-            self.find_matching_versions(&versions, &parsed_spec)
-        } else {
-            versions.iter().collect()
-        };
-
-        Ok(filtered_versions
-            .iter()
-            .map(|v| v.version.trim_start_matches('v').to_string())
-            .collect())
-    }
-
-    async fn fetch_versions(&self) -> Result<Vec<NodeVersion>> {
+    async fn fetch_versions(&self, ignore_cached_versions: bool) -> Result<Vec<NodeVersion>> {
         // Check cache first
         {
             let cache = VERSION_CACHE
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
 
-            if !cache.is_expired() && !cache.versions.is_empty() {
+            if !ignore_cached_versions && !cache.is_expired() && !cache.versions.is_empty() {
                 return Ok(cache.versions.clone());
             }
         }
 
-        // Fetch from Node.js API
         let url = "https://nodejs.org/dist/index.json";
         let response = self
             .client
@@ -219,7 +186,6 @@ impl NodeVersionManager {
             version_a.cmp(&version_b)
         });
 
-        // Update cache
         {
             let mut cache = VERSION_CACHE
                 .lock()
@@ -286,7 +252,6 @@ impl NodeVersionManager {
             }
         }
 
-        // Sort by version number
         matching.sort_by(|a, b| {
             let version_a = self.parse_node_version(&a.version).unwrap_or_default();
             let version_b = self.parse_node_version(&b.version).unwrap_or_default();
@@ -365,7 +330,7 @@ mod tests {
         let resolver = NodeVersionManager::new();
 
         // This test requires internet connection
-        if let Ok(version) = resolver.resolve_version("18").await {
+        if let Ok(version) = resolver.resolve_version("18", false).await {
             assert!(version.starts_with("18."));
             println!("Resolved '18' to: {}", version);
         }
