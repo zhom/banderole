@@ -640,7 +640,7 @@ impl BundlerTestHelper {
                 #[cfg(windows)]
                 {
                     let _ = std::process::Command::new("taskkill")
-                        .args(&["/F", "/PID", &child_id.to_string()])
+                        .args(["/F", "/PID", &child_id.to_string()])
                         .output();
                 }
 

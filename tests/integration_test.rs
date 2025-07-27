@@ -1304,7 +1304,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std
             #[cfg(windows)]
             {
                 let _ = std::process::Command::new("taskkill")
-                    .args(&["/F", "/PID", &child_id.to_string()])
+                    .args(["/F", "/PID", &child_id.to_string()])
                     .output();
             }
 
