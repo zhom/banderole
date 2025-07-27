@@ -556,7 +556,7 @@ impl BundlerTestHelper {
         // Find the created executable
         let executable_name = custom_name.unwrap_or("test-project");
         let executable_path = output_dir.join(if cfg!(windows) {
-            format!("{executable_name}.exe")
+            format!("{executable_name}.bat")
         } else {
             executable_name.to_string()
         });
@@ -564,7 +564,7 @@ impl BundlerTestHelper {
         // Check if collision avoidance was used
         if !executable_path.exists() || !executable_path.is_file() {
             let bundle_executable_path = output_dir.join(if cfg!(windows) {
-                format!("{executable_name}-bundle.exe")
+                format!("{executable_name}-bundle.bat")
             } else {
                 format!("{executable_name}-bundle")
             });
@@ -600,8 +600,17 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        let mut cmd = Command::new(executable_path);
-        cmd.args(args);
+        let mut cmd = if cfg!(windows) {
+            // On Windows, run batch files through cmd.exe
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", executable_path.to_str().unwrap()]);
+            cmd.args(args);
+            cmd
+        } else {
+            let mut cmd = Command::new(executable_path);
+            cmd.args(args);
+            cmd
+        };
 
         for (key, value) in env_vars {
             cmd.env(key, value);

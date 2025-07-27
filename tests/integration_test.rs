@@ -123,7 +123,7 @@ process.exit(0);"#;
 
     // Find the created executable
     let executable_path = temp_dir.path().join(if cfg!(windows) {
-        "integration-test-app.exe"
+        "integration-test-app.bat"
     } else {
         "integration-test-app"
     });
@@ -289,7 +289,7 @@ process.exit(0);"#;
 
     // Find and run the created executable to verify it uses the correct Node version
     let executable_name = if cfg!(target_os = "windows") {
-        "nvmrc-test-app.exe"
+        "nvmrc-test-app.bat"
     } else {
         "nvmrc-test-app"
     };
@@ -413,7 +413,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
 
     // Verify that a bundle was created with collision-avoided name
     let expected_executable = temp_dir.path().join(if cfg!(windows) {
-        "collision-test-app-bundle.exe"
+        "collision-test-app-bundle.bat"
     } else {
         "collision-test-app-bundle"
     });
@@ -546,7 +546,7 @@ try {
 
     // Find the created executable (may have collision avoidance suffix)
     let mut executable_path = temp_dir.path().join(if cfg!(windows) {
-        "ts-test-app.exe"
+        "ts-test-app.bat"
     } else {
         "ts-test-app"
     });
@@ -554,7 +554,7 @@ try {
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
-            "ts-test-app-bundle.exe"
+            "ts-test-app-bundle.bat"
         } else {
             "ts-test-app-bundle"
         });
@@ -693,7 +693,7 @@ try {
 
     // Find the created executable (may have collision avoidance suffix)
     let mut executable_path = temp_dir.path().join(if cfg!(windows) {
-        "ts-outdir-test.exe"
+        "ts-outdir-test.bat"
     } else {
         "ts-outdir-test"
     });
@@ -701,7 +701,7 @@ try {
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
-            "ts-outdir-test-bundle.exe"
+            "ts-outdir-test-bundle.bat"
         } else {
             "ts-outdir-test-bundle"
         });
@@ -840,7 +840,7 @@ try {
 
     // Find the created executable (may have collision avoidance suffix)
     let mut executable_path = temp_dir.path().join(if cfg!(windows) {
-        "ts-extends-test.exe"
+        "ts-extends-test.bat"
     } else {
         "ts-extends-test"
     });
@@ -848,7 +848,7 @@ try {
     // Check if collision avoidance was used (need to check if it's a file, not just exists)
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
-            "ts-extends-test-bundle.exe"
+            "ts-extends-test-bundle.bat"
         } else {
             "ts-extends-test-bundle"
         });
@@ -1058,7 +1058,7 @@ packages:
 
     // Find the created executable
     let mut executable_path = temp_dir.path().join(if cfg!(windows) {
-        "pnpm-test-app.exe"
+        "pnpm-test-app.bat"
     } else {
         "pnpm-test-app"
     });
@@ -1066,7 +1066,7 @@ packages:
     // Check if collision avoidance was used
     if !executable_path.exists() || !executable_path.is_file() {
         executable_path = temp_dir.path().join(if cfg!(windows) {
-            "pnpm-test-app-bundle.exe"
+            "pnpm-test-app-bundle.bat"
         } else {
             "pnpm-test-app-bundle"
         });

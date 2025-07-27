@@ -1089,7 +1089,7 @@ fn resolve_output_path(
     }
 
     let ext = if Platform::current().is_windows() {
-        ".exe"
+        ".bat"
     } else {
         ""
     };

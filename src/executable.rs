@@ -137,7 +137,8 @@ __DATA__
 
 /// Create a Windows-compatible self-extracting executable
 fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
-    let mut file = fs::File::create(out).context("Failed to create output executable")?;
+    let bat_path = out.with_extension("bat");
+    let mut file = fs::File::create(&bat_path).context("Failed to create output batch file")?;
 
     let script = format!(
         r#"@echo off
