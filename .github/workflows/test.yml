@@ -93,6 +93,7 @@ jobs:
         uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b #master
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
