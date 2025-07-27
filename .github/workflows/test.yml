@@ -1,0 +1,151 @@
+name: Cross-Platform Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: Linux x64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux ARM64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS ARM64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            name: Windows ARM64
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --target ${{ matrix.target }} --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build --target ${{ matrix.target }} --verbose
+
+      - name: Run tests
+        run: cargo test --target ${{ matrix.target }} --verbose
+
+      - name: Build release
+        run: cargo build --target ${{ matrix.target }} --release --verbose
+
+  # Test installation from crates.io simulation
+  install-test:
+    name: Installation Test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-22.04-arm, windows-11-arm]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install banderole locally
+        run: cargo install --path .
+
+      - name: Test banderole installation
+        run: banderole --version
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny check
+
+  # Minimum Supported Rust Version (MSRV) check
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install MSRV Rust toolchain
+        uses: dtolnay/rust-toolchain@1.70.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check MSRV compatibility
+        run: cargo check --all-targets --all-features

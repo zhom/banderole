@@ -1,11 +1,15 @@
 {
     "cSpell.words": [
         "chrono",
+        "Clippy",
+        "dtolnay",
         "enabledelayedexpansion",
         "ERRORLEVEL",
         "LOCALAPPDATA",
         "lockfiles",
         "mktemp",
+        "msrv",
+        "msvc",
         "nvmrc",
         "outpath",
         "readlink",
@@ -15,6 +19,7 @@
         "serde",
         "setlocal",
         "sindresorhus",
+        "Swatinem",
         "taskkill",
         "USERPROFILE",
         "walkdir",
