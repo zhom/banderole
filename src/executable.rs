@@ -19,6 +19,7 @@ pub fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, _app_nam
 
 /// Create a Unix-compatible self-extracting executable
 fn create_unix_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     let mut file = fs::File::create(out).context("Failed to create output executable")?;
@@ -121,9 +122,12 @@ __DATA__
     file.write_all(encoded.as_bytes())?;
     file.write_all(b"\n")?;
 
-    let mut perms = file.metadata()?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(out, perms)?;
+    #[cfg(unix)]
+    {
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(out, perms)?;
+    }
 
     Ok(())
 }
