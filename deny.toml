@@ -11,22 +11,13 @@ allow = [
     "Unicode-DFS-2016",
 ]
 
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-1.0",
-    "AGPL-3.0",
-]
-
 confidence-threshold = 0.8
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
 unmaintained = "workspace"
 yanked = "warn"
-notice = "warn"
 
 [sources]
 unknown-registry = "warn"
