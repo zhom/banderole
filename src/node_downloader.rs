@@ -17,7 +17,6 @@ pub struct NodeDownloader {
     platform: Platform,
     cache_dir: PathBuf,
     node_version: String,
-    version_resolver: NodeVersionManager,
 }
 
 impl NodeDownloader {
@@ -43,13 +42,7 @@ impl NodeDownloader {
             platform: Platform::current(),
             cache_dir,
             node_version: resolved_version,
-            version_resolver,
         })
-    }
-
-    /// Get the resolved Node.js version
-    pub fn get_version(&self) -> &str {
-        &self.node_version
     }
 
     fn get_persistent_cache_dir() -> Result<PathBuf> {
