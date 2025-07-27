@@ -61,9 +61,11 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Check code formatting
+        if: matrix.os != 'windows-11-arm'
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
+        if: matrix.os != 'windows-11-arm'
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
