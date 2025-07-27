@@ -150,6 +150,9 @@ set "READY_FILE=!APP_DIR!\.ready"
 set "QUEUE_DIR=!APP_DIR!\.queue"
 set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
 
+for /f "tokens=2 delims==" %%i in ('wmic process where "processid=%PID%" get processid /value 2^>nul ^| find "ProcessId"') do set "CURRENT_PID=%%i"
+if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%"
+
 :run_app
 cd /d "!APP_DIR!\app"
 
@@ -173,32 +176,45 @@ exit /b
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
     goto run_app
 )
+
 if not exist "!QUEUE_DIR!" mkdir "!QUEUE_DIR!" 2>nul
-set "QUEUE_ENTRY=!QUEUE_DIR!\%RANDOM%-%TIME:~6,5%.queue"
-echo %RANDOM% > "!QUEUE_ENTRY!"
+set "QUEUE_ENTRY=!QUEUE_DIR!\!CURRENT_PID!-%RANDOM%-%TIME:~6,5%.queue"
+echo !CURRENT_PID! > "!QUEUE_ENTRY!"
+
+set /a WAIT_COUNT=0
+set /a MAX_WAIT=120
 
 :acquire_lock
+call :cleanup_stale_locks
+
 if not exist "!LOCK_FILE!" (
     mkdir "!LOCK_FILE!" 2>nul
     if !errorlevel! equ 0 (
-        echo !RANDOM! > "!EXTRACTION_PID_FILE!"
+        echo !CURRENT_PID! > "!EXTRACTION_PID_FILE!"
         goto extract
     )
 )
+
 :wait_for_ready
 if exist "!READY_FILE!" (
-    :wait_queue_turn
-    if not exist "!QUEUE_ENTRY!" goto run_app
-    if exist "!READY_FILE!" goto run_app
-    
-    timeout /t 1 /nobreak >nul 2>&1
-    goto wait_queue_turn
+    if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
+        call :cleanup_queue
+        goto run_app
+    )
+)
+
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! geq !MAX_WAIT! (
+    echo Error: Timeout waiting for extraction to complete >&2
+    call :cleanup_queue
+    exit /b 1
 )
 
 if exist "!EXTRACTION_PID_FILE!" (
     timeout /t 1 /nobreak >nul 2>&1
     goto wait_for_ready
 ) else (
+    timeout /t 1 /nobreak >nul 2>&1
     goto acquire_lock
 )
 
@@ -206,13 +222,14 @@ if exist "!EXTRACTION_PID_FILE!" (
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
     call :cleanup_queue
     rmdir "!LOCK_FILE!" 2>nul
+    del "!EXTRACTION_PID_FILE!" 2>nul
     goto run_app
 )
 
 if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
-set "TEMP_ZIP=%TEMP%\banderole-bundle-%RANDOM%.zip"
+set "TEMP_ZIP=%TEMP%\banderole-bundle-!CURRENT_PID!-%RANDOM%.zip"
 powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('%TEMP_ZIP%', [System.Convert]::FromBase64String($data))"
 
 if not exist "%TEMP_ZIP%" (
@@ -264,10 +281,20 @@ if exist "!QUEUE_DIR!" (
 
 del "!EXTRACTION_PID_FILE!" 2>nul
 call :cleanup_queue
-
 rmdir "!LOCK_FILE!" 2>nul
 
 goto run_app
+
+:cleanup_stale_locks
+if exist "!LOCK_FILE!" (
+    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') {{ $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) {{ Write-Output 'stale' }} }}"') do (
+        if "%%i"=="stale" (
+            rmdir "!LOCK_FILE!" 2>nul
+            del "!EXTRACTION_PID_FILE!" 2>nul
+        )
+    )
+)
+exit /b
 
 __DATA__
 "#
