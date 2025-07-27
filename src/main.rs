@@ -52,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
             no_compression,
             ignore_cached_versions,
         } => {
-            bundler::bundle_project(path, output, name, no_compression, ignore_cached_versions).await?;
+            bundler::bundle_project(path, output, name, no_compression, ignore_cached_versions)
+                .await?;
         }
     }
 

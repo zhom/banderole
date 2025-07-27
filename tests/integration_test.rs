@@ -162,8 +162,8 @@ process.exit(0);"#;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     println!("Test 1 - Exit status: {}", output.status);
-    println!("Test 1 - Stdout: {}", stdout);
-    println!("Test 1 - Stderr: {}", stderr);
+    println!("Test 1 - Stdout: {stdout}");
+    println!("Test 1 - Stderr: {stderr}");
 
     // Check for expected output
     assert!(output.status.success(), "First run failed");
@@ -193,7 +193,7 @@ process.exit(0);"#;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("Test 2 - Exit status: {}", output.status);
-    println!("Test 2 - Output: {}", stdout);
+    println!("Test 2 - Output: {stdout}");
 
     assert!(output.status.success(), "Cached run failed");
     assert!(
@@ -236,7 +236,7 @@ process.exit(0);"#;
     // Build banderole
     println!("Building banderole for Node version test...");
     let output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build banderole");
 
@@ -254,7 +254,7 @@ process.exit(0);"#;
     println!("Bundling test app with .nvmrc...");
     let mut bundle_cmd = Command::new(&banderole_path);
     bundle_cmd
-        .args(&["bundle", test_app_path.to_str().unwrap()])
+        .args(["bundle", test_app_path.to_str().unwrap()])
         .current_dir(temp_dir.path());
 
     let bundle_output = bundle_cmd.output().expect("Failed to bundle test app");
@@ -279,13 +279,12 @@ process.exit(0);"#;
     // Check that the output mentions the correct Node.js version
     let stdout = String::from_utf8_lossy(&bundle_output.stdout);
     let stderr = String::from_utf8_lossy(&bundle_output.stderr);
-    let combined_output = format!("{}{}", stdout, stderr);
-    println!("Bundle output: {}", combined_output);
+    let combined_output = format!("{stdout}{stderr}");
+    println!("Bundle output: {combined_output}");
 
     assert!(
         combined_output.contains("Node.js v20.18.1"),
-        "Expected Node.js version not found in output: {}",
-        combined_output
+        "Expected Node.js version not found in output: {combined_output}"
     );
 
     // Find and run the created executable to verify it uses the correct Node version
@@ -338,12 +337,11 @@ process.exit(0);"#;
     );
 
     let stdout = String::from_utf8_lossy(&run_output.stdout);
-    println!("Executable output: {}", stdout);
+    println!("Executable output: {stdout}");
 
     assert!(
         stdout.contains("v20.18.1"),
-        "Expected Node.js version not found in executable output: {}",
-        stdout
+        "Expected Node.js version not found in executable output: {stdout}"
     );
 }
 
@@ -435,7 +433,7 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
     let output = Command::new(&expected_executable).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("Collision test output: {}", stdout);
+    println!("Collision test output: {stdout}");
 
     assert!(output.status.success(), "Collision test executable failed");
     assert!(
@@ -587,7 +585,7 @@ try {
     let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("TypeScript test output: {}", stdout);
+    println!("TypeScript test output: {stdout}");
 
     assert!(output.status.success(), "TypeScript executable failed");
     assert!(
@@ -727,7 +725,7 @@ try {
     let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("Custom outDir test output: {}", stdout);
+    println!("Custom outDir test output: {stdout}");
 
     assert!(output.status.success(), "Custom outDir executable failed");
     assert!(
@@ -874,7 +872,7 @@ try {
     let output = Command::new(&executable_path).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("Extends tsconfig test output: {}", stdout);
+    println!("Extends tsconfig test output: {stdout}");
 
     assert!(
         output.status.success(),
@@ -1053,8 +1051,8 @@ packages:
 
     let bundle_stdout = String::from_utf8_lossy(&bundle_output.stdout);
     let bundle_stderr = String::from_utf8_lossy(&bundle_output.stderr);
-    println!("Bundle stdout: {}", bundle_stdout);
-    println!("Bundle stderr: {}", bundle_stderr);
+    println!("Bundle stdout: {bundle_stdout}");
+    println!("Bundle stderr: {bundle_stderr}");
 
     // The bundling succeeded if we can find the executable - output parsing is unreliable in tests
 
@@ -1102,9 +1100,9 @@ packages:
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    println!("pnpm test stdout: {}", stdout);
+    println!("pnpm test stdout: {stdout}");
     if !stderr.is_empty() {
-        println!("pnpm test stderr: {}", stderr);
+        println!("pnpm test stderr: {stderr}");
     }
 
     // The critical assertions - the app should run successfully and load its dependencies
@@ -1300,7 +1298,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std
             #[cfg(unix)]
             {
                 let _ = std::process::Command::new("kill")
-                    .args(&["-9", &child_id.to_string()])
+                    .args(["-9", &child_id.to_string()])
                     .output();
             }
             #[cfg(windows)]

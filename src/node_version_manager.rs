@@ -135,7 +135,11 @@ impl NodeVersionManager {
     }
 
     /// Resolve a version specification like "23", "23.5", "v22.1.0" to a complete version
-    pub async fn resolve_version(&self, version_spec: &str, ignore_cached_versions: bool) -> Result<String> {
+    pub async fn resolve_version(
+        &self,
+        version_spec: &str,
+        ignore_cached_versions: bool,
+    ) -> Result<String> {
         let versions = self.fetch_versions(ignore_cached_versions).await?;
         let parsed_spec = self.parse_version_spec(version_spec)?;
 
@@ -332,7 +336,7 @@ mod tests {
         // This test requires internet connection
         if let Ok(version) = resolver.resolve_version("18", false).await {
             assert!(version.starts_with("18."));
-            println!("Resolved '18' to: {}", version);
+            println!("Resolved '18' to: {version}");
         }
     }
 }

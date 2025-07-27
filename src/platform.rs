@@ -23,18 +23,18 @@ impl Platform {
             ("macos", "aarch64") => Platform::MacosArm64,
             ("windows", "x86_64") => Platform::WindowsX64,
             ("windows", "aarch64") => Platform::WindowsArm64,
-            _ => panic!("Unsupported platform: {}-{}", os, arch),
+            _ => panic!("Unsupported platform: {os}-{arch}"),
         }
     }
 
     pub fn node_archive_name(&self, version: &str) -> String {
         match self {
-            Platform::LinuxX64 => format!("node-v{}-linux-x64.tar.gz", version),
-            Platform::LinuxArm64 => format!("node-v{}-linux-arm64.tar.gz", version),
-            Platform::MacosX64 => format!("node-v{}-darwin-x64.tar.gz", version),
-            Platform::MacosArm64 => format!("node-v{}-darwin-arm64.tar.gz", version),
-            Platform::WindowsX64 => format!("node-v{}-win-x64.zip", version),
-            Platform::WindowsArm64 => format!("node-v{}-win-arm64.zip", version),
+            Platform::LinuxX64 => format!("node-v{version}-linux-x64.tar.gz"),
+            Platform::LinuxArm64 => format!("node-v{version}-linux-arm64.tar.gz"),
+            Platform::MacosX64 => format!("node-v{version}-darwin-x64.tar.gz"),
+            Platform::MacosArm64 => format!("node-v{version}-darwin-arm64.tar.gz"),
+            Platform::WindowsX64 => format!("node-v{version}-win-x64.zip"),
+            Platform::WindowsArm64 => format!("node-v{version}-win-arm64.zip"),
         }
     }
 

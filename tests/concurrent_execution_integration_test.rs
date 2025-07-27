@@ -54,8 +54,8 @@ async fn test_concurrent_first_launch() -> Result<()> {
 
             // Execute the binary
             let output = Command::new(executable_path.as_ref())
-                .env("TEST_VAR", format!("thread_{}", i))
-                .args(&[format!("--thread-id={}", i)])
+                .env("TEST_VAR", format!("thread_{i}"))
+                .args(&[format!("--thread-id={i}")])
                 .output()
                 .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
 
@@ -87,7 +87,7 @@ async fn test_concurrent_first_launch() -> Result<()> {
     }
 
     let total_time = start_time.elapsed();
-    println!("Total concurrent execution time: {:?}", total_time);
+    println!("Total concurrent execution time: {total_time:?}");
 
     // Verify all executions succeeded
     assert_eq!(
@@ -98,28 +98,22 @@ async fn test_concurrent_first_launch() -> Result<()> {
 
     // Verify each execution produced expected output
     for (thread_id, duration, stdout) in &results {
-        println!("Thread {} completed in {:?}", thread_id, duration);
+        println!("Thread {thread_id} completed in {duration:?}");
 
         // Check for expected output
         assert!(
             stdout.contains("Hello from test project!"),
-            "Thread {} missing expected greeting in output: {}",
-            thread_id,
-            stdout
+            "Thread {thread_id} missing expected greeting in output: {stdout}"
         );
 
         assert!(
-            stdout.contains(&format!("thread_{}", thread_id)),
-            "Thread {} missing environment variable in output: {}",
-            thread_id,
-            stdout
+            stdout.contains(&format!("thread_{thread_id}")),
+            "Thread {thread_id} missing environment variable in output: {stdout}"
         );
 
         assert!(
-            stdout.contains(&format!("--thread-id={}", thread_id)),
-            "Thread {} missing argument in output: {}",
-            thread_id,
-            stdout
+            stdout.contains(&format!("--thread-id={thread_id}")),
+            "Thread {thread_id} missing argument in output: {stdout}"
         );
     }
 
@@ -135,7 +129,7 @@ async fn test_concurrent_first_launch() -> Result<()> {
         .min()
         .unwrap();
 
-    println!("Duration range: {:?} - {:?}", min_duration, max_duration);
+    println!("Duration range: {min_duration:?} - {max_duration:?}");
 
     // The difference shouldn't be too extreme if queueing is working properly
     // Allow up to 30 seconds difference for extraction + queue processing
@@ -201,7 +195,7 @@ async fn test_cached_concurrent_execution() -> Result<()> {
             let thread_start = Instant::now();
 
             let output = Command::new(executable_path.as_ref())
-                .env("TEST_VAR", format!("cached_{}", i))
+                .env("TEST_VAR", format!("cached_{i}"))
                 .output()
                 .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
 
@@ -230,21 +224,19 @@ async fn test_cached_concurrent_execution() -> Result<()> {
     }
 
     let total_time = start_time.elapsed();
-    println!("Total cached concurrent execution time: {:?}", total_time);
+    println!("Total cached concurrent execution time: {total_time:?}");
 
     // Verify all executions succeeded
     assert_eq!(results.len(), NUM_CONCURRENT);
 
     // With cache populated, all executions should be relatively fast
     for (thread_id, duration) in &results {
-        println!("Cached thread {} completed in {:?}", thread_id, duration);
+        println!("Cached thread {thread_id} completed in {duration:?}");
 
         // Each execution should be fast since cache is populated
         assert!(
             *duration < Duration::from_secs(10),
-            "Cached execution took too long: {:?} for thread {}",
-            duration,
-            thread_id
+            "Cached execution took too long: {duration:?} for thread {thread_id}"
         );
     }
 
@@ -316,7 +308,7 @@ process.exit(0);
             thread::sleep(Duration::from_millis(i as u64 * 10));
 
             let output = Command::new(executable_path.as_ref())
-                .args(&[format!("--thread-id={}", i)])
+                .args(&[format!("--thread-id={i}")])
                 .output()
                 .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
 
@@ -354,15 +346,13 @@ process.exit(0);
         );
 
         assert!(
-            stdout.contains(&format!("Thread {} started", thread_id)),
-            "Thread {} missing start message",
-            thread_id
+            stdout.contains(&format!("Thread {thread_id} started")),
+            "Thread {thread_id} missing start message"
         );
 
         assert!(
-            stdout.contains(&format!("Thread {} completed", thread_id)),
-            "Thread {} missing completion message",
-            thread_id
+            stdout.contains(&format!("Thread {thread_id} completed")),
+            "Thread {thread_id} missing completion message"
         );
     }
 
@@ -405,8 +395,7 @@ async fn test_extraction_failure_recovery() -> Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Hello from test project!"),
-        "Recovery test missing expected output: {}",
-        stdout
+        "Recovery test missing expected output: {stdout}"
     );
 
     println!("✅ Extraction failure recovery test passed!");

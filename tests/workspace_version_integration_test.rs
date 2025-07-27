@@ -153,9 +153,9 @@ async fn test_version_format_compatibility() -> Result<()> {
     ];
 
     for (version_spec, test_name) in test_cases {
-        println!("Testing version format: {} ({})", version_spec, test_name);
+        println!("Testing version format: {version_spec} ({test_name})");
 
-        let project = TestProject::new(&format!("version-format-{}", test_name))
+        let project = TestProject::new(&format!("version-format-{test_name}"))
             .workspace()
             .with_dependency("fs-extra", "^11.1.1");
 
@@ -172,7 +172,7 @@ async fn test_version_format_compatibility() -> Result<()> {
         let executable_path = BundlerTestHelper::bundle_project_with_compression(
             manager.project_path(),
             manager.temp_dir(),
-            Some(&format!("version-format-{}-test", test_name)),
+            Some(&format!("version-format-{test_name}-test")),
             false,
         )?;
 
@@ -188,7 +188,7 @@ async fn test_version_format_compatibility() -> Result<()> {
             &[],
         )?;
 
-        println!("✅ version format {} test passed!", version_spec);
+        println!("✅ version format {version_spec} test passed!");
     }
 
     println!("✅ all version format compatibility tests passed!");
@@ -209,14 +209,14 @@ async fn test_nested_workspace_package_version_resolution() -> Result<()> {
 
     // Create version files at different levels
     let workspace_root = manager.workspace_root().unwrap();
-    
+
     // Workspace root has Node 20
     fs::write(workspace_root.join(".nvmrc"), "20")?;
-    
+
     // Create an intermediate directory (simulating packages/ directory)
     let packages_dir = workspace_root.join("packages");
     fs::create_dir_all(&packages_dir)?;
-    
+
     // Packages directory has Node 18 (should be ignored since project is deeper)
     fs::write(packages_dir.join(".node-version"), "18")?;
 

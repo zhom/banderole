@@ -29,14 +29,10 @@ impl NodeDownloader {
             .resolve_version(version_spec, false)
             .await
             .context(format!(
-                "Failed to resolve Node.js version '{}'",
-                version_spec
+                "Failed to resolve Node.js version '{version_spec}'"
             ))?;
 
-        println!(
-            "Resolved '{}' to Node.js version {}",
-            version_spec, resolved_version
-        );
+        println!("Resolved '{version_spec}' to Node.js version {resolved_version}");
 
         Ok(Self {
             platform: Platform::current(),
@@ -236,7 +232,7 @@ impl NodeDownloader {
 
     async fn extract_tar_gz(&self, archive_path: &Path, target_dir: &Path) -> Result<()> {
         let output = tokio::process::Command::new("tar")
-            .args(&[
+            .args([
                 "-xzf",
                 archive_path.to_str().unwrap(),
                 "-C",

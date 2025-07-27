@@ -49,9 +49,10 @@ pub async fn bundle_project(
 
     let source_dir = determine_source_directory(&project_path, &package_value)?;
 
-    let node_version = detect_node_version_with_workspace_support(&project_path, ignore_cached_versions)
-        .await
-        .unwrap_or_else(|_| "22.17.1".into());
+    let node_version =
+        detect_node_version_with_workspace_support(&project_path, ignore_cached_versions)
+            .await
+            .unwrap_or_else(|_| "22.17.1".into());
 
     println!(
         "Bundling {app_name} v{app_version} using Node.js v{node_version} for {plat}",
@@ -120,7 +121,7 @@ where
 
             if let Some(main) = package_value["main"].as_str() {
                 let main_path = project_path.join(main);
-                if let Ok(relative_to_source) = main_path.strip_prefix(&source_dir) {
+                if let Ok(relative_to_source) = main_path.strip_prefix(source_dir) {
                     package_value["main"] =
                         Value::String(relative_to_source.to_string_lossy().to_string());
                 }
@@ -141,7 +142,7 @@ where
     }
 
     for warning in &deps_result.warnings {
-        println!("Warning: {}", warning);
+        println!("Warning: {warning}");
     }
 
     Ok(())
@@ -172,7 +173,7 @@ where
         let is_pnpm_workspace = if package_manager == PackageManager::Pnpm {
             if let Ok(entries) = fs::read_dir(&project_node_modules) {
                 entries.flatten().any(|entry| {
-                    if entry.file_type().ok().map_or(false, |ft| ft.is_symlink()) {
+                    if entry.file_type().ok().is_some_and(|ft| ft.is_symlink()) {
                         if let Ok(target) = fs::read_link(entry.path()) {
                             let target_str = target.to_string_lossy();
                             target_str.contains("/.pnpm/") && target_str.starts_with("../")
@@ -324,7 +325,7 @@ fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> Pack
     if node_modules_path.exists() {
         if let Ok(entries) = fs::read_dir(node_modules_path) {
             for entry in entries.flatten() {
-                if entry.file_type().ok().map_or(false, |ft| ft.is_symlink()) {
+                if entry.file_type().ok().is_some_and(|ft| ft.is_symlink()) {
                     if let Ok(target) = fs::read_link(entry.path()) {
                         let target_str = target.to_string_lossy();
                         if target_str.contains("/.pnpm/") {
@@ -407,7 +408,7 @@ where
         if let Err(e) =
             copy_pnpm_package_comprehensive(zip, &node_modules_path, &pnpm_dir, package_name, opts)
         {
-            println!("Warning: Failed to copy package {}: {}", package_name, e);
+            println!("Warning: Failed to copy package {package_name}: {e}");
         }
     }
 
@@ -704,7 +705,7 @@ where
                 package_name,
                 opts,
             ) {
-                println!("Warning: Failed to copy package {}: {}", package_name, e);
+                println!("Warning: Failed to copy package {package_name}: {e}");
             }
         }
     } else {
@@ -727,7 +728,7 @@ where
 
         for package_name in &resolved_packages {
             if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
-                println!("Warning: Failed to copy package {}: {}", package_name, e);
+                println!("Warning: Failed to copy package {package_name}: {e}");
             }
         }
     }
@@ -804,7 +805,7 @@ where
 
     for package_name in &resolved_packages {
         if let Err(e) = copy_workspace_package(zip, node_modules_path, package_name, opts) {
-            println!("Warning: Failed to copy package {}: {}", package_name, e);
+            println!("Warning: Failed to copy package {package_name}: {e}");
         }
     }
 
@@ -887,7 +888,7 @@ where
             package_name,
             opts,
         ) {
-            println!("Warning: Failed to copy package {}: {}", package_name, e);
+            println!("Warning: Failed to copy package {package_name}: {e}");
         }
     }
 
@@ -917,15 +918,17 @@ async fn detect_node_version_with_workspace_support(
 ) -> Result<String> {
     let version_manager = NodeVersionManager::new();
     let version_spec = find_node_version_spec(project_path)?;
-    
-    version_manager.resolve_version(&version_spec, ignore_cached_versions).await
+
+    version_manager
+        .resolve_version(&version_spec, ignore_cached_versions)
+        .await
 }
 
 /// Find Node version specification from .nvmrc or .node-version files,
 /// supporting workspace packages (parent/package, parent/packages/package patterns)
 fn find_node_version_spec(project_path: &Path) -> Result<String> {
     let mut current_path = project_path;
-    
+
     loop {
         for file in [".nvmrc", ".node-version"] {
             let version_file = current_path.join(file);
@@ -938,32 +941,27 @@ fn find_node_version_spec(project_path: &Path) -> Result<String> {
                 }
             }
         }
-        
+
         if is_workspace_root(current_path) || current_path.parent().is_none() {
             break;
         }
-        
+
         current_path = current_path.parent().unwrap();
     }
-    
+
     anyhow::bail!("Node version specification not found in project or workspace hierarchy")
 }
 
 /// Check if a directory is a workspace root (contains workspace configuration)
 fn is_workspace_root(path: &Path) -> bool {
-    let workspace_files = [
-        "pnpm-workspace.yaml",
-        "lerna.json",
-        "rush.json",
-        "nx.json",
-    ];
-    
+    let workspace_files = ["pnpm-workspace.yaml", "lerna.json", "rush.json", "nx.json"];
+
     for file in workspace_files {
         if path.join(file).exists() {
             return true;
         }
     }
-    
+
     if let Ok(package_json_content) = fs::read_to_string(path.join("package.json")) {
         if let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&package_json_content) {
             if package_json.get("workspaces").is_some() {
@@ -971,7 +969,7 @@ fn is_workspace_root(path: &Path) -> bool {
             }
         }
     }
-    
+
     false
 }
 
@@ -1011,10 +1009,11 @@ fn determine_source_directory(project_path: &Path, package_json: &Value) -> Resu
 
     for dir_name in ["dist", "build", "lib", "out"] {
         let dir_path = project_path.join(dir_name);
-        if dir_path.exists() && dir_path.is_dir() {
-            if contains_js_files(&dir_path) || dir_path.join("package.json").exists() {
-                return Ok(dir_path);
-            }
+        if dir_path.exists()
+            && dir_path.is_dir()
+            && (contains_js_files(&dir_path) || dir_path.join("package.json").exists())
+        {
+            return Ok(dir_path);
         }
     }
 
@@ -1118,7 +1117,6 @@ fn resolve_output_path(
 // ────────────────────────────────────────────────────────────────────────────
 // Self-extracting executable generation using a more reliable approach
 // ────────────────────────────────────────────────────────────────────────────
-
 
 // ────────────────────────────────────────────────────────────────────────────
 // Utility helpers

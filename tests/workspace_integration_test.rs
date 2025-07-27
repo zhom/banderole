@@ -79,7 +79,7 @@ async fn test_pnpm_workspace_dependency_bundling() -> Result<()> {
             println!("Successfully installed pnpm workspace dependencies");
         }
         Err(e) => {
-            println!("Pnpm installation failed, falling back to npm: {}", e);
+            println!("Pnpm installation failed, falling back to npm: {e}");
             manager.install_workspace_dependencies()?;
         }
     }

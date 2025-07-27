@@ -265,7 +265,7 @@ process.exit(0);"#;
         let mut package_json = self.generate_package_json(config)?;
         // Update main to point to compiled output
         let mut package_obj: serde_json::Value = serde_json::from_str(&package_json)?;
-        package_obj["main"] = serde_json::Value::String(format!("{}/index.js", out_dir));
+        package_obj["main"] = serde_json::Value::String(format!("{out_dir}/index.js"));
         package_json = serde_json::to_string_pretty(&package_obj)?;
 
         fs::write(self.project_path.join("package.json"), package_json)?;
@@ -315,7 +315,7 @@ try {
         )?;
 
         // Create a marker file to verify correct source directory is used
-        let marker_js = format!(r#"module.exports = {{ source: "{}" }};"#, out_dir);
+        let marker_js = format!(r#"module.exports = {{ source: "{out_dir}" }};"#);
         fs::write(self.project_path.join(out_dir).join("marker.js"), marker_js)?;
 
         Ok(())
@@ -468,12 +468,12 @@ process.exit(0);"#;
             if deps.is_empty() {
                 String::new()
             } else {
-                format!(",\n  \"dependencies\": {{\n{}\n  }}", deps)
+                format!(",\n  \"dependencies\": {{\n{deps}\n  }}")
             },
             if dev_deps.is_empty() {
                 String::new()
             } else {
-                format!(",\n  \"devDependencies\": {{\n{}\n  }}", dev_deps)
+                format!(",\n  \"devDependencies\": {{\n{dev_deps}\n  }}")
             }
         );
 
@@ -482,7 +482,7 @@ process.exit(0);"#;
 
     fn format_dependencies(&self, deps: &[(String, String)]) -> String {
         deps.iter()
-            .map(|(name, version)| format!("    \"{}\": \"{}\"", name, version))
+            .map(|(name, version)| format!("    \"{name}\": \"{version}\""))
             .collect::<Vec<_>>()
             .join(",\n")
     }
@@ -556,7 +556,7 @@ impl BundlerTestHelper {
         // Find the created executable
         let executable_name = custom_name.unwrap_or("test-project");
         let executable_path = output_dir.join(if cfg!(windows) {
-            format!("{}.exe", executable_name)
+            format!("{executable_name}.exe")
         } else {
             executable_name.to_string()
         });
@@ -564,9 +564,9 @@ impl BundlerTestHelper {
         // Check if collision avoidance was used
         if !executable_path.exists() || !executable_path.is_file() {
             let bundle_executable_path = output_dir.join(if cfg!(windows) {
-                format!("{}-bundle.exe", executable_name)
+                format!("{executable_name}-bundle.exe")
             } else {
-                format!("{}-bundle", executable_name)
+                format!("{executable_name}-bundle")
             });
 
             if bundle_executable_path.exists() {
@@ -634,7 +634,7 @@ impl BundlerTestHelper {
                 #[cfg(unix)]
                 {
                     let _ = std::process::Command::new("kill")
-                        .args(&["-9", &child_id.to_string()])
+                        .args(["-9", &child_id.to_string()])
                         .output();
                 }
                 #[cfg(windows)]
@@ -663,16 +663,14 @@ impl TestCacheManager {
             } else {
                 return Ok(()); // Can't determine cache dir, skip cleanup
             }
+        } else if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
+            std::path::PathBuf::from(xdg_cache).join("banderole")
+        } else if let Some(home) = std::env::var_os("HOME") {
+            std::path::PathBuf::from(home)
+                .join(".cache")
+                .join("banderole")
         } else {
-            if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
-                std::path::PathBuf::from(xdg_cache).join("banderole")
-            } else if let Some(home) = std::env::var_os("HOME") {
-                std::path::PathBuf::from(home)
-                    .join(".cache")
-                    .join("banderole")
-            } else {
-                std::path::PathBuf::from("/tmp").join("banderole-cache")
-            }
+            std::path::PathBuf::from("/tmp").join("banderole-cache")
         };
 
         if cache_dir.exists() {

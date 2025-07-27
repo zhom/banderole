@@ -9,7 +9,7 @@ fn main() {
     // Write platform info for runtime use
     fs::write(Path::new(&out_dir).join("platform"), platform.to_string()).unwrap();
 
-    println!("cargo:rustc-env=NODE_VERSION={}", NODE_VERSION);
+    println!("cargo:rustc-env=NODE_VERSION={NODE_VERSION}");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -47,6 +47,6 @@ fn get_platform() -> Platform {
         ("macos", "aarch64") => Platform::MacosArm64,
         ("windows", "x86_64") => Platform::WindowsX64,
         ("windows", "aarch64") => Platform::WindowsArm64,
-        _ => panic!("Unsupported platform: {}-{}", os, arch),
+        _ => panic!("Unsupported platform: {os}-{arch}"),
     }
 }

@@ -7,7 +7,11 @@ use std::path::Path;
 use uuid::Uuid;
 
 /// Create a self-extracting executable for the current platform
-pub fn create_self_extracting_executable(out: &Path, zip_data: Vec<u8>, _app_name: &str) -> Result<()> {
+pub fn create_self_extracting_executable(
+    out: &Path,
+    zip_data: Vec<u8>,
+    _app_name: &str,
+) -> Result<()> {
     let build_id = Uuid::new_v4();
 
     if Platform::current().is_windows() {
@@ -36,7 +40,7 @@ else
     CACHE_DIR="/tmp/banderole-cache"
 fi
 
-APP_DIR="$CACHE_DIR/{}"
+APP_DIR="$CACHE_DIR/{build_id}"
 READY_FILE="$APP_DIR/.ready"
 
 run_app() {{
@@ -112,8 +116,7 @@ echo "Error: Failed to extract or run application after $MAX_ATTEMPTS attempts" 
 exit 1
 
 __DATA__
-"#,
-        build_id
+"#
     );
 
     file.write_all(script.as_bytes())?;
@@ -141,7 +144,7 @@ fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> R
 setlocal enabledelayedexpansion
 
 set "CACHE_DIR=%LOCALAPPDATA%\banderole"
-set "APP_DIR=!CACHE_DIR!\{}"
+set "APP_DIR=!CACHE_DIR!\{build_id}"
 set "LOCK_FILE=!APP_DIR!\.lock"
 set "READY_FILE=!APP_DIR!\.ready"
 set "QUEUE_DIR=!APP_DIR!\.queue"
@@ -267,8 +270,7 @@ rmdir "!LOCK_FILE!" 2>nul
 goto run_app
 
 __DATA__
-"#,
-        build_id
+"#
     );
 
     file.write_all(script.as_bytes())?;
