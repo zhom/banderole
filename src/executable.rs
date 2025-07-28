@@ -321,7 +321,7 @@ exit /b
 
     // Add data marker
     file.write_all(b"\n__DATA__\n")?;
-    
+
     // Append base64-encoded zip data
     let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
     file.write_all(encoded.as_bytes())?;
