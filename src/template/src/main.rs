@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zip::ZipArchive;
 use directories::BaseDirs;
+use fs2::FileExt;
 
 // These will be replaced during the build process with actual embedded data
 // The build script will generate a data.rs file with the actual data
@@ -24,11 +25,32 @@ fn main() -> Result<()> {
         return run_app(&app_dir, &args[1..]);
     }
     
+    // Use file locking to prevent concurrent extraction
+    let lock_file_path = cache_dir.join(format!("{}.lock", BUILD_ID));
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_file_path)
+        .context("Failed to create lock file")?;
+    
+    // Acquire exclusive lock
+    lock_file.lock_exclusive().context("Failed to acquire extraction lock")?;
+    
+    // Double-check if extraction completed while waiting for lock
+    if ready_file.exists() && is_extraction_valid(&app_dir)? {
+        // Release lock and run
+        lock_file.unlock().ok();
+        return run_app(&app_dir, &args[1..]);
+    }
+    
     // Extract application if needed
     extract_application(&app_dir)?;
     
     // Mark as ready
     fs::write(&ready_file, "ready")?;
+    
+    // Release lock
+    lock_file.unlock().context("Failed to release extraction lock")?;
     
     // Run the application
     run_app(&app_dir, &args[1..])
@@ -52,6 +74,11 @@ fn is_extraction_valid(app_dir: &Path) -> Result<bool> {
 }
 
 fn extract_application(app_dir: &Path) -> Result<()> {
+    // Remove existing directory if it exists to ensure clean extraction
+    if app_dir.exists() {
+        fs::remove_dir_all(app_dir).context("Failed to remove existing app directory")?;
+    }
+    
     // Create app directory
     fs::create_dir_all(app_dir).context("Failed to create app directory")?;
     
@@ -74,6 +101,10 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             
             let mut outfile = fs::File::create(&outpath).context("Failed to create output file")?;
             std::io::copy(&mut file, &mut outfile).context("Failed to extract file")?;
+            
+            // Ensure file is fully written before setting permissions
+            outfile.sync_all().context("Failed to sync file to disk")?;
+            drop(outfile); // Explicitly close the file
             
             // Set executable permissions on Unix systems
             #[cfg(unix)]
