@@ -30,12 +30,12 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macOS ARM64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: Windows x64
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            name: Windows ARM64
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          #   name: Windows x64
+          # - os: windows-11-arm
+          #   target: aarch64-pc-windows-msvc
+          #   name: Windows ARM64
 
     runs-on: ${{ matrix.os }}
     
