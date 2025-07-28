@@ -5,6 +5,7 @@
         "dtolnay",
         "enabledelayedexpansion",
         "ERRORLEVEL",
+        "imagename",
         "LOCALAPPDATA",
         "lockfiles",
         "mktemp",
