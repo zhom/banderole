@@ -155,9 +155,9 @@ for /f "tokens=2 delims==" %%i in ('wmic process where "processid=%PID%" get pro
 if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%"
 
 :run_app
-cd /d "!APP_DIR!\app"
+cd /d "!APP_DIR!\app" || exit /b 1
 
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main ^|^| 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
 if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
 
 if exist "!MAIN_SCRIPT!" (
@@ -231,9 +231,9 @@ if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
 set "TEMP_ZIP=%TEMP%\banderole-bundle-!CURRENT_PID!-%RANDOM%.zip"
-powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('%TEMP_ZIP%', [System.Convert]::FromBase64String($data))"
+powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('!TEMP_ZIP!', [System.Convert]::FromBase64String($data))"
 
-if not exist "%TEMP_ZIP%" (
+if not exist "!TEMP_ZIP!" (
     echo Error: Failed to extract bundle data >&2
     call :cleanup_queue
     rmdir "!LOCK_FILE!" 2>nul
@@ -241,9 +241,9 @@ if not exist "%TEMP_ZIP%" (
     exit /b 1
 )
 
-powershell -NoProfile -Command "try {{ Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
+powershell -NoProfile -Command "try {{ Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
 set "EXTRACT_RESULT=!errorlevel!"
-del "%TEMP_ZIP%" 2>nul
+del "!TEMP_ZIP!" 2>nul
 
 if !EXTRACT_RESULT! neq 0 (
     echo Error: Failed to extract bundle >&2
