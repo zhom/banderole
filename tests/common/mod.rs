@@ -600,17 +600,8 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        let mut cmd = if cfg!(windows) {
-            // On Windows, run batch files through cmd.exe
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/C", executable_path.to_str().unwrap()]);
-            cmd.args(args);
-            cmd
-        } else {
-            let mut cmd = Command::new(executable_path);
-            cmd.args(args);
-            cmd
-        };
+        let mut cmd = Command::new(executable_path);
+        cmd.args(args);
 
         for (key, value) in env_vars {
             cmd.env(key, value);

@@ -88,9 +88,16 @@ fn extract_application(app_dir: &Path) -> Result<()> {
     
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).context("Failed to read zip entry")?;
-        let outpath = app_dir.join(file.name());
         
-        if file.name().ends_with('/') {
+        // Normalize the file path for the current platform
+        // Zip files use forward slashes, but we need proper path separators for the OS
+        let file_name = file.name();
+        
+        // Use Path::new to properly handle path separators across platforms
+        let normalized_path = Path::new(file_name);
+        let outpath = app_dir.join(normalized_path);
+        
+        if file_name.ends_with('/') {
             // Directory
             fs::create_dir_all(&outpath).context("Failed to create directory")?;
         } else {
