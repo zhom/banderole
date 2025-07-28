@@ -218,7 +218,16 @@ if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
 set "TEMP_ZIP=%TEMP%\banderole-bundle-!CURRENT_PID!-%RANDOM%.zip"
-powershell -NoProfile -Command "$env:CURRENT_PID='!CURRENT_PID!'; $tempZip = $env:TEMP + '\banderole-bundle-' + $env:CURRENT_PID + '-' + (Get-Random) + '.zip'; $content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes($tempZip, [System.Convert]::FromBase64String($data)); Write-Output $tempZip" > "%TEMP%\temp_zip_path.txt"
+powershell -NoProfile -Command "$tempZip = $env:TEMP + '\banderole-bundle-!CURRENT_PID!-' + (Get-Random) + '.zip'; $scriptPath = '%~f0'; $content = Get-Content $scriptPath -Raw -Encoding UTF8; $dataMarker = '__DATA__'; $dataStart = $content.IndexOf($dataMarker); if ($dataStart -eq -1) {{ Write-Error 'Data marker not found'; exit 1 }}; $dataStart += $dataMarker.Length; $data = $content.Substring($dataStart).Trim(); if ([string]::IsNullOrWhiteSpace($data)) {{ Write-Error 'No data found after marker'; exit 1 }}; try {{ [System.IO.File]::WriteAllBytes($tempZip, [System.Convert]::FromBase64String($data)); Write-Output $tempZip }} catch {{ Write-Error ('Base64 decode failed: ' + $_.Exception.Message); exit 1 }}" > "%TEMP%\temp_zip_path.txt" 2>&1
+if !errorlevel! neq 0 (
+    type "%TEMP%\temp_zip_path.txt" >>&2
+    del "%TEMP%\temp_zip_path.txt" 2>nul
+    echo Error: Failed to extract bundle data >&2
+    call :cleanup_queue
+    rmdir "!LOCK_FILE!" 2>nul
+    del "!EXTRACTION_PID_FILE!" 2>nul
+    exit /b 1
+)
 set /p TEMP_ZIP=<"%TEMP%\temp_zip_path.txt"
 del "%TEMP%\temp_zip_path.txt" 2>nul
 
@@ -230,7 +239,7 @@ if not exist "!TEMP_ZIP!" (
     exit /b 1
 )
 
-powershell -NoProfile -Command "try {{ Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
+powershell -NoProfile -Command "try {{{{ Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force }}}} catch {{{{ Write-Error $_.Exception.Message; exit 1 }}}}"
 set "EXTRACT_RESULT=!errorlevel!"
 del "!TEMP_ZIP!" 2>nul
 
@@ -278,7 +287,7 @@ goto run_app
 :run_app
 cd /d "!APP_DIR!\app" || exit /b 1
 
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main ^|^| 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{{{ console.log(require('./package.json').main ^|^| 'index.js'); }}}} catch(e) {{{{ console.log('index.js'); }}}}" 2^>nul') do set "MAIN_SCRIPT=%%i"
 if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
 
 if exist "!MAIN_SCRIPT!" (
@@ -297,7 +306,7 @@ exit /b
 
 :cleanup_stale_locks
 if exist "!LOCK_FILE!" (
-    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') {{ $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) {{ Write-Output 'stale' }} }}"') do (
+    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') {{{{ $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) {{{{ Write-Output 'stale' }}}} }}}}"') do (
         if "%%i"=="stale" (
             rmdir "!LOCK_FILE!" 2>nul
             del "!EXTRACTION_PID_FILE!" 2>nul
@@ -305,13 +314,14 @@ if exist "!LOCK_FILE!" (
     )
 )
 exit /b
-
-__DATA__
 "#
     );
 
     file.write_all(script.as_bytes())?;
 
+    // Add data marker
+    file.write_all(b"\n__DATA__\n")?;
+    
     // Append base64-encoded zip data
     let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
     file.write_all(encoded.as_bytes())?;
