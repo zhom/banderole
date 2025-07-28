@@ -151,14 +151,14 @@ set "READY_FILE=!APP_DIR!\.ready"
 set "QUEUE_DIR=!APP_DIR!\.queue"
 set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
 
-rem Get current process ID
-set "CURRENT_PID=%RANDOM%"
-for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq cmd.exe" /fo csv ^| find /v "ImageName"') do (
-    set "CURRENT_PID=%%~i"
+rem Get current process ID with better uniqueness
+set "CURRENT_PID=%RANDOM%-%TIME:~6,5%"
+for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq cmd.exe" /fo csv 2^>nul ^| find /v "ImageName" 2^>nul') do (
+    set "CURRENT_PID=%%~i-%RANDOM%"
     goto :got_pid
 )
 :got_pid
-if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%"
+if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%-%TIME:~6,5%"
 
 rem Check if app is already extracted and ready
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
@@ -166,7 +166,7 @@ if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR
 )
 
 if not exist "!QUEUE_DIR!" mkdir "!QUEUE_DIR!" 2>nul
-set "QUEUE_ENTRY=!QUEUE_DIR!\!CURRENT_PID!-%RANDOM%-%TIME:~6,5%.queue"
+set "QUEUE_ENTRY=!QUEUE_DIR!\!CURRENT_PID!.queue"
 echo !CURRENT_PID! > "!QUEUE_ENTRY!"
 
 set /a WAIT_COUNT=0
@@ -217,9 +217,34 @@ if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR
 if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
-set "TEMP_ZIP=%TEMP%\banderole-bundle-!CURRENT_PID!-%RANDOM%.zip"
-powershell -NoProfile -Command "$tempZip = $env:TEMP + '\banderole-bundle-!CURRENT_PID!-' + (Get-Random) + '.zip'; $scriptPath = '%~f0'; $content = Get-Content $scriptPath -Raw -Encoding UTF8; $dataMarker = '__DATA__'; $dataStart = $content.IndexOf($dataMarker); if ($dataStart -eq -1) {{ Write-Error 'Data marker not found'; exit 1 }}; $dataStart += $dataMarker.Length; $data = $content.Substring($dataStart).Trim(); if ([string]::IsNullOrWhiteSpace($data)) {{ Write-Error 'No data found after marker'; exit 1 }}; try {{ [System.IO.File]::WriteAllBytes($tempZip, [System.Convert]::FromBase64String($data)); Write-Output $tempZip }} catch {{ Write-Error ('Base64 decode failed: ' + $_.Exception.Message); exit 1 }}" > "%TEMP%\temp_zip_path.txt" 2>&1
-if !errorlevel! neq 0 (
+rem Create unique temp file name to avoid conflicts
+set "TEMP_ZIP=%TEMP%\banderole-!CURRENT_PID!.zip"
+set "TEMP_SCRIPT=%TEMP%\banderole-extract-!CURRENT_PID!.ps1"
+
+rem Create PowerShell script file to avoid command line length issues
+echo $scriptPath = "%~f0" > "!TEMP_SCRIPT!"
+echo $content = Get-Content $scriptPath -Raw -Encoding UTF8 >> "!TEMP_SCRIPT!"
+echo $dataMarker = '__DATA__' >> "!TEMP_SCRIPT!"
+echo $dataStart = $content.IndexOf($dataMarker) >> "!TEMP_SCRIPT!"
+echo if ($dataStart -eq -1) { Write-Error 'Data marker not found'; exit 1 } >> "!TEMP_SCRIPT!"
+echo $dataStart += $dataMarker.Length >> "!TEMP_SCRIPT!"
+echo $data = $content.Substring($dataStart).Trim() >> "!TEMP_SCRIPT!"
+echo $data = $data -replace '\r', '' >> "!TEMP_SCRIPT!"
+echo $data = $data -replace '\n', '' >> "!TEMP_SCRIPT!"
+echo if ([string]::IsNullOrWhiteSpace($data)) { Write-Error 'No data found after marker'; exit 1 } >> "!TEMP_SCRIPT!"
+echo try { >> "!TEMP_SCRIPT!"
+echo     [System.IO.File]::WriteAllBytes("%TEMP%\banderole-!CURRENT_PID!.zip", [System.Convert]::FromBase64String($data)) >> "!TEMP_SCRIPT!"
+echo     Write-Output "%TEMP%\banderole-!CURRENT_PID!.zip" >> "!TEMP_SCRIPT!"
+echo } catch { >> "!TEMP_SCRIPT!"
+echo     Write-Error ("Base64 decode failed: " + $_.Exception.Message) >> "!TEMP_SCRIPT!"
+echo     exit 1 >> "!TEMP_SCRIPT!"
+echo } >> "!TEMP_SCRIPT!"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "!TEMP_SCRIPT!" > "%TEMP%\temp_zip_path.txt" 2>&1
+set "EXTRACT_EXIT_CODE=!errorlevel!"
+del "!TEMP_SCRIPT!" 2>nul
+
+if !EXTRACT_EXIT_CODE! neq 0 (
     type "%TEMP%\temp_zip_path.txt" >>&2
     del "%TEMP%\temp_zip_path.txt" 2>nul
     echo Error: Failed to extract bundle data >&2
@@ -228,6 +253,7 @@ if !errorlevel! neq 0 (
     del "!EXTRACTION_PID_FILE!" 2>nul
     exit /b 1
 )
+
 set /p TEMP_ZIP=<"%TEMP%\temp_zip_path.txt"
 del "%TEMP%\temp_zip_path.txt" 2>nul
 
@@ -239,7 +265,7 @@ if not exist "!TEMP_ZIP!" (
     exit /b 1
 )
 
-powershell -NoProfile -Command "try {{{{ Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force }}}} catch {{{{ Write-Error $_.Exception.Message; exit 1 }}}}"
+powershell -NoProfile -Command "try { Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force } catch { Write-Error $_.Exception.Message; exit 1 }"
 set "EXTRACT_RESULT=!errorlevel!"
 del "!TEMP_ZIP!" 2>nul
 
@@ -287,7 +313,7 @@ goto run_app
 :run_app
 cd /d "!APP_DIR!\app" || exit /b 1
 
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{{{ console.log(require('./package.json').main ^|^| 'index.js'); }}}} catch(e) {{{{ console.log('index.js'); }}}}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try { console.log(require('./package.json').main ^|^| 'index.js'); } catch(e) { console.log('index.js'); }" 2^>nul') do set "MAIN_SCRIPT=%%i"
 if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
 
 if exist "!MAIN_SCRIPT!" (
@@ -306,7 +332,7 @@ exit /b
 
 :cleanup_stale_locks
 if exist "!LOCK_FILE!" (
-    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') {{{{ $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) {{{{ Write-Output 'stale' }}}} }}}}"') do (
+    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') { $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) { Write-Output 'stale' } }"') do (
         if "%%i"=="stale" (
             rmdir "!LOCK_FILE!" 2>nul
             del "!EXTRACTION_PID_FILE!" 2>nul
@@ -319,12 +345,20 @@ exit /b
 
     file.write_all(script.as_bytes())?;
 
-    // Add data marker
-    file.write_all(b"\n__DATA__\n")?;
+    // Add data marker with proper line ending
+    file.write_all(b"\r\n__DATA__\r\n")?;
 
-    // Append base64-encoded zip data
+    // Append base64-encoded zip data with proper line breaks for Windows
     let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
-    file.write_all(encoded.as_bytes())?;
+    // Split into 76-character lines as per Base64 standard
+    let lines: Vec<&str> = encoded.as_bytes().chunks(76)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect();
+    
+    for line in lines {
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\r\n")?;
+    }
 
     Ok(())
 }
