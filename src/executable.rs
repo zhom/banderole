@@ -1,365 +1,158 @@
-use crate::platform::Platform;
 use anyhow::{Context, Result};
-use base64::Engine as _;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
+use std::process::Command;
+use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Create a self-extracting executable for the current platform
-pub fn create_self_extracting_executable(
-    out: &Path,
-    zip_data: Vec<u8>,
-    _app_name: &str,
-) -> Result<()> {
-    let build_id = Uuid::new_v4();
+use crate::embedded_template::EmbeddedTemplate;
+use crate::platform::Platform;
+use crate::rust_toolchain::RustToolchain;
 
-    if Platform::current().is_windows() {
-        create_windows_executable(out, zip_data, &build_id.to_string())
-    } else {
-        create_unix_executable(out, zip_data, &build_id.to_string())
+/// Create a cross-platform Rust executable with embedded data
+pub fn create_self_extracting_executable(
+    output_path: &Path,
+    zip_data: Vec<u8>,
+    app_name: &str,
+) -> Result<()> {
+    // Check if Rust toolchain is available
+    if let Err(e) = RustToolchain::check_availability() {
+        eprintln!("\nError: {}", e);
+        eprintln!("{}", RustToolchain::get_installation_instructions());
+        return Err(e);
     }
+    
+    let build_id = Uuid::new_v4().to_string();
+    
+    // Create temporary directory for building
+    let temp_dir = TempDir::new().context("Failed to create temporary directory")?;
+    let build_dir = temp_dir.path();
+    
+    // Copy template to build directory
+    copy_template_to_build_dir(build_dir)?;
+    
+    // Write embedded data
+    let zip_path = build_dir.join("embedded_data.zip");
+    fs::write(&zip_path, &zip_data).context("Failed to write embedded zip data")?;
+    
+    let build_id_path = build_dir.join("build_id.txt");
+    fs::write(&build_id_path, &build_id).context("Failed to write build ID")?;
+    
+    // Update Cargo.toml with app name
+    update_cargo_toml(build_dir, app_name)?;
+    
+    // Build the executable
+    build_executable(build_dir, output_path, app_name)?;
+    
+    Ok(())
 }
 
-/// Create a Unix-compatible self-extracting executable
-fn create_unix_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut file = fs::File::create(out).context("Failed to create output executable")?;
-
-    let script = format!(
-        r#"#!/bin/bash
-set -e
-
-if [ -n "$XDG_CACHE_HOME" ]; then
-    CACHE_DIR="$XDG_CACHE_HOME/banderole"
-elif [ -n "$HOME" ]; then
-    CACHE_DIR="$HOME/.cache/banderole"
-else
-    CACHE_DIR="/tmp/banderole-cache"
-fi
-
-APP_DIR="$CACHE_DIR/{build_id}"
-READY_FILE="$APP_DIR/.ready"
-
-run_app() {{
-    cd "$APP_DIR/app" || exit 1
+fn copy_template_to_build_dir(build_dir: &Path) -> Result<()> {
+    // Use embedded template files instead of filesystem copy
+    let template = EmbeddedTemplate::new();
+    template.write_to_dir(build_dir)
+        .context("Failed to write embedded template files to build directory")?;
     
-    # Find main script from package.json
-    MAIN_SCRIPT=$("$APP_DIR/node/bin/node" -e "try {{ console.log(require('./package.json').main || 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2>/dev/null || echo "index.js")
+    Ok(())
+}
+
+
+
+fn update_cargo_toml(build_dir: &Path, app_name: &str) -> Result<()> {
+    let cargo_toml_path = build_dir.join("Cargo.toml");
+    let cargo_content = fs::read_to_string(&cargo_toml_path)
+        .context("Failed to read Cargo.toml")?;
     
-    if [ -f "$MAIN_SCRIPT" ]; then
-        exec "$APP_DIR/node/bin/node" "$MAIN_SCRIPT" "$@"
-    else
-        echo "Error: Main script '$MAIN_SCRIPT' not found" >&2
-        exit 1
-    fi
-}}
-
-if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-    run_app "$@"
-fi
-
-mkdir -p "$CACHE_DIR" 2>/dev/null || true
-
-ATTEMPTS=0
-MAX_ATTEMPTS=30
-
-while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-    if mkdir "$APP_DIR" 2>/dev/null; then
-        
-        TEMP_ZIP=$(mktemp) || exit 1
-        trap 'rm -f "$TEMP_ZIP"' EXIT
-        
-        awk '/^__DATA__$/{{p=1;next}} p{{print}}' "$0" | base64 -d > "$TEMP_ZIP"
-        
-        if [ ! -s "$TEMP_ZIP" ]; then
-            echo "Error: Failed to extract bundle data" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        if ! unzip -q "$TEMP_ZIP" -d "$APP_DIR" 2>/dev/null; then
-            echo "Error: Failed to extract bundle" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        if [ ! -f "$APP_DIR/app/package.json" ] || [ ! -x "$APP_DIR/node/bin/node" ]; then
-            echo "Error: Bundle extraction incomplete" >&2
-            rm -rf "$APP_DIR" 2>/dev/null || true
-            exit 1
-        fi
-        
-        touch "$READY_FILE"
-        
-        run_app "$@"
-    else
-        if [ -f "$READY_FILE" ] && [ -f "$APP_DIR/app/package.json" ] && [ -x "$APP_DIR/node/bin/node" ]; then
-            run_app "$@"
-        fi
-        
-        ATTEMPTS=$((ATTEMPTS + 1))
-        if [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; then
-            DELAY=$(awk "BEGIN {{print int(100 * (2 ^ (($ATTEMPTS - 1) / 3)) + 0.5)}}" 2>/dev/null || echo 100)
-            if [ "$DELAY" -gt 1000 ]; then
-                DELAY=1000
-            fi
-            sleep $(awk "BEGIN {{print $DELAY / 1000}}" 2>/dev/null || echo 0.1)
-        fi
-    fi
-done
-
-# If we've exhausted retries, exit with error
-echo "Error: Failed to extract or run application after $MAX_ATTEMPTS attempts" >&2
-exit 1
-
-__DATA__
-"#
+    // Replace the package name
+    let updated_content = cargo_content.replace(
+        r#"name = "banderole-app""#,
+        &format!(r#"name = "{}""#, sanitize_package_name(app_name))
     );
+    
+    fs::write(&cargo_toml_path, updated_content)
+        .context("Failed to write updated Cargo.toml")?;
+    
+    Ok(())
+}
 
-    file.write_all(script.as_bytes())?;
+fn sanitize_package_name(name: &str) -> String {
+    // Rust package names must be valid identifiers
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .trim_start_matches(|c: char| c.is_numeric() || c == '-')
+        .to_string()
+}
 
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
-    file.write_all(encoded.as_bytes())?;
-    file.write_all(b"\n")?;
-
+fn build_executable(build_dir: &Path, output_path: &Path, app_name: &str) -> Result<()> {
+    let current_platform = Platform::current();
+    let target_triple = get_target_triple(&current_platform);
+    
+    // Ensure we have the target installed
+    install_rust_target(&target_triple)?;
+    
+    // Build the executable
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(build_dir)
+        .args(&["build", "--release", "--target", &target_triple]);
+    
+    let output = cmd.output().context("Failed to execute cargo build")?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Cargo build failed:\n{}", stderr);
+    }
+    
+    // Get the sanitized package name to find the correct executable
+    let package_name = sanitize_package_name(app_name);
+    let executable_name = if current_platform.is_windows() {
+        format!("{}.exe", package_name)
+    } else {
+        package_name
+    };
+    
+    let built_executable = build_dir
+        .join("target")
+        .join(&target_triple)
+        .join("release")
+        .join(executable_name);
+    
+    if !built_executable.exists() {
+        anyhow::bail!("Built executable not found at {}", built_executable.display());
+    }
+    
+    // Ensure output directory exists
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create output directory")?;
+    }
+    
+    fs::copy(&built_executable, output_path)
+        .context("Failed to copy built executable to output path")?;
+    
+    // Set executable permissions on Unix systems
     #[cfg(unix)]
     {
-        let mut perms = file.metadata()?.permissions();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(output_path)?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(out, perms)?;
+        fs::set_permissions(output_path, perms)?;
     }
-
+    
     Ok(())
 }
 
-/// Create a Windows-compatible self-extracting executable
-fn create_windows_executable(out: &Path, zip_data: Vec<u8>, build_id: &str) -> Result<()> {
-    let bat_path = out.with_extension("bat");
-    let mut file = fs::File::create(&bat_path).context("Failed to create output batch file")?;
-
-    let script = format!(
-        r#"@echo off
-setlocal enabledelayedexpansion
-
-set "CACHE_DIR=%LOCALAPPDATA%\banderole"
-set "APP_DIR=!CACHE_DIR!\{build_id}"
-set "LOCK_FILE=!APP_DIR!\.lock"
-set "READY_FILE=!APP_DIR!\.ready"
-set "QUEUE_DIR=!APP_DIR!\.queue"
-set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
-
-rem Get current process ID with better uniqueness
-set "CURRENT_PID=%RANDOM%-%TIME:~6,5%"
-for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq cmd.exe" /fo csv 2^>nul ^| find /v "ImageName" 2^>nul') do (
-    set "CURRENT_PID=%%~i-%RANDOM%"
-    goto :got_pid
-)
-:got_pid
-if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%-%TIME:~6,5%"
-
-rem Check if app is already extracted and ready
-if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
-    goto run_app
-)
-
-if not exist "!QUEUE_DIR!" mkdir "!QUEUE_DIR!" 2>nul
-set "QUEUE_ENTRY=!QUEUE_DIR!\!CURRENT_PID!.queue"
-echo !CURRENT_PID! > "!QUEUE_ENTRY!"
-
-set /a WAIT_COUNT=0
-set /a MAX_WAIT=120
-
-:acquire_lock
-call :cleanup_stale_locks
-
-if not exist "!LOCK_FILE!" (
-    mkdir "!LOCK_FILE!" 2>nul
-    if !errorlevel! equ 0 (
-        echo !CURRENT_PID! > "!EXTRACTION_PID_FILE!"
-        goto extract
-    )
-)
-
-:wait_for_ready
-if exist "!READY_FILE!" (
-    if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
-        call :cleanup_queue
-        goto run_app
-    )
-)
-
-set /a WAIT_COUNT+=1
-if !WAIT_COUNT! geq !MAX_WAIT! (
-    echo Error: Timeout waiting for extraction to complete >&2
-    call :cleanup_queue
-    exit /b 1
-)
-
-if exist "!EXTRACTION_PID_FILE!" (
-    timeout /t 1 /nobreak >nul 2>&1
-    goto wait_for_ready
-) else (
-    timeout /t 1 /nobreak >nul 2>&1
-    goto acquire_lock
-)
-
-:extract
-if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
-    call :cleanup_queue
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    goto run_app
-)
-
-if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
-if not exist "!APP_DIR!" mkdir "!APP_DIR!"
-
-rem Create unique temp file name to avoid conflicts
-set "TEMP_ZIP=%TEMP%\banderole-!CURRENT_PID!.zip"
-set "TEMP_SCRIPT=%TEMP%\banderole-extract-!CURRENT_PID!.ps1"
-
-rem Create PowerShell script file to avoid command line length issues
-echo $scriptPath = "%~f0" > "!TEMP_SCRIPT!"
-echo $content = [System.IO.File]::ReadAllText($scriptPath, [System.Text.Encoding]::UTF8) >> "!TEMP_SCRIPT!"
-echo $dataMarker = '__DATA__' >> "!TEMP_SCRIPT!"
-echo $dataStart = $content.IndexOf($dataMarker) >> "!TEMP_SCRIPT!"
-echo if ($dataStart -eq -1) {{ Write-Error 'Data marker not found'; exit 1 }} >> "!TEMP_SCRIPT!"
-echo $dataStart += $dataMarker.Length >> "!TEMP_SCRIPT!"
-echo $rawData = $content.Substring($dataStart) >> "!TEMP_SCRIPT!"
-echo $data = ($rawData -split '[\r\n]+' ^| Where-Object {{ $_.Trim() -ne '' }}) -join '' >> "!TEMP_SCRIPT!"
-echo if ([string]::IsNullOrWhiteSpace($data)) {{ Write-Error 'No data found after marker'; exit 1 }} >> "!TEMP_SCRIPT!"
-echo try {{ >> "!TEMP_SCRIPT!"
-echo     [System.IO.File]::WriteAllBytes("%TEMP%\banderole-!CURRENT_PID!.zip", [System.Convert]::FromBase64String($data)) >> "!TEMP_SCRIPT!"
-echo     Write-Output "%TEMP%\banderole-!CURRENT_PID!.zip" >> "!TEMP_SCRIPT!"
-echo }} catch {{ >> "!TEMP_SCRIPT!"
-echo     Write-Error ("Base64 decode failed: " + $_.Exception.Message) >> "!TEMP_SCRIPT!"
-echo     exit 1 >> "!TEMP_SCRIPT!"
-echo }} >> "!TEMP_SCRIPT!"
-
-powershell -NoProfile -ExecutionPolicy Bypass -File "!TEMP_SCRIPT!" > "%TEMP%\temp_zip_path.txt" 2>&1
-set "EXTRACT_EXIT_CODE=!errorlevel!"
-del "!TEMP_SCRIPT!" 2>nul
-
-if !EXTRACT_EXIT_CODE! neq 0 (
-    type "%TEMP%\temp_zip_path.txt" >>&2
-    del "%TEMP%\temp_zip_path.txt" 2>nul
-    echo Error: Failed to extract bundle data >&2
-    call :cleanup_queue
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-set /p TEMP_ZIP=<"%TEMP%\temp_zip_path.txt"
-del "%TEMP%\temp_zip_path.txt" 2>nul
-
-if not exist "!TEMP_ZIP!" (
-    echo Error: Failed to extract bundle data >&2
-    call :cleanup_queue
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-powershell -NoProfile -Command "try {{ Expand-Archive -Path '!TEMP_ZIP!' -DestinationPath '!APP_DIR!' -Force }} catch {{ Write-Error $_.Exception.Message; exit 1 }}"
-set "EXTRACT_RESULT=!errorlevel!"
-del "!TEMP_ZIP!" 2>nul
-
-if !EXTRACT_RESULT! neq 0 (
-    echo Error: Failed to extract bundle >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-if not exist "!APP_DIR!\app\package.json" (
-    echo Error: Bundle extraction incomplete >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-if not exist "!APP_DIR!\node\node.exe" (
-    echo Error: Node.js executable not found >&2
-    call :cleanup_queue
-    rmdir /s /q "!APP_DIR!" 2>nul
-    rmdir "!LOCK_FILE!" 2>nul
-    del "!EXTRACTION_PID_FILE!" 2>nul
-    exit /b 1
-)
-
-echo ready > "!READY_FILE!"
-
-if exist "!QUEUE_DIR!" (
-    for %%f in ("!QUEUE_DIR!\*.queue") do (
-        if exist "%%f" del "%%f" 2>nul
-    )
-)
-
-del "!EXTRACTION_PID_FILE!" 2>nul
-call :cleanup_queue
-rmdir "!LOCK_FILE!" 2>nul
-
-goto run_app
-
-:run_app
-cd /d "!APP_DIR!\app" || exit /b 1
-
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main ^|^| 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
-if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
-
-if exist "!MAIN_SCRIPT!" (
-    "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
-    exit /b !errorlevel!
-) else (
-    echo Error: Main script '!MAIN_SCRIPT!' not found >&2
-    exit /b 1
-)
-
-:cleanup_queue
-if defined QUEUE_ENTRY if exist "!QUEUE_ENTRY!" (
-    del "!QUEUE_ENTRY!" 2>nul
-)
-exit /b
-
-:cleanup_stale_locks
-if exist "!LOCK_FILE!" (
-    for /f %%i in ('powershell -NoProfile -Command "if (Test-Path '!LOCK_FILE!') {{ $age = (Get-Date) - (Get-Item '!LOCK_FILE!').CreationTime; if ($age.TotalSeconds -gt 300) {{ Write-Output 'stale' }} }}"') do (
-        if "%%i"=="stale" (
-            rmdir "!LOCK_FILE!" 2>nul
-            del "!EXTRACTION_PID_FILE!" 2>nul
-        )
-    )
-)
-exit /b
-"#
-    );
-
-    file.write_all(script.as_bytes())?;
-
-    // Add data marker with proper line ending
-    file.write_all(b"\r\n__DATA__\r\n")?;
-
-    // Append base64-encoded zip data with proper line breaks for Windows
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&zip_data);
-    // Split into 76-character lines as per Base64 standard
-    let lines: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(76)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap())
-        .collect();
-
-    for line in lines {
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\r\n")?;
+fn get_target_triple(platform: &Platform) -> String {
+    match platform {
+        Platform::MacosX64 => "x86_64-apple-darwin".to_string(),
+        Platform::MacosArm64 => "aarch64-apple-darwin".to_string(),
+        Platform::LinuxX64 => "x86_64-unknown-linux-gnu".to_string(),
+        Platform::LinuxArm64 => "aarch64-unknown-linux-gnu".to_string(),
+        Platform::WindowsX64 => "x86_64-pc-windows-msvc".to_string(),
+        Platform::WindowsArm64 => "aarch64-pc-windows-msvc".to_string(),
     }
-
-    Ok(())
 }
+
+fn install_rust_target(target: &str) -> Result<()> {
+    RustToolchain::ensure_target_installed(target)
+}
+

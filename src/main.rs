@@ -1,8 +1,10 @@
 mod bundler;
+mod embedded_template;
 mod executable;
 mod node_downloader;
 mod node_version_manager;
 mod platform;
+mod rust_toolchain;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
