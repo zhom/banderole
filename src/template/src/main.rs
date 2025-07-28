@@ -72,7 +72,32 @@ fn is_extraction_valid(app_dir: &Path) -> Result<bool> {
         app_dir.join("node").join("bin").join("node")
     };
     
-    Ok(app_package_json.exists() && node_executable.exists())
+    let package_exists = app_package_json.exists();
+    let node_exists = node_executable.exists();
+    
+    if !package_exists || !node_exists {
+        // Log debugging information for failed validation
+        eprintln!("Extraction validation failed:");
+        eprintln!("  App directory: {}", app_dir.display());
+        eprintln!("  Package.json exists: {} ({})", package_exists, app_package_json.display());
+        eprintln!("  Node executable exists: {} ({})", node_exists, node_executable.display());
+        
+        if let Ok(entries) = fs::read_dir(app_dir) {
+            eprintln!("  App directory contents:");
+            for entry in entries.flatten() {
+                eprintln!("    - {}", entry.file_name().to_string_lossy());
+            }
+        }
+        
+        if let Ok(entries) = fs::read_dir(app_dir.join("node")) {
+            eprintln!("  Node directory contents:");
+            for entry in entries.flatten() {
+                eprintln!("    - {}", entry.file_name().to_string_lossy());
+            }
+        }
+    }
+    
+    Ok(package_exists && node_exists)
 }
 
 fn extract_application(app_dir: &Path) -> Result<()> {
@@ -181,14 +206,71 @@ fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
         app_dir.join("node").join("bin").join("node")
     };
     
+    // Verify Node.js executable exists and is accessible
+    if !node_executable.exists() {
+        let app_dir_contents = fs::read_dir(&app_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|e| vec![format!("Error reading app dir: {}", e)]);
+            
+        let node_dir_contents = fs::read_dir(app_dir.join("node"))
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|e| vec![format!("Error reading node dir: {}", e)]);
+            
+        return Err(anyhow::anyhow!(
+            "Node.js executable not found at: {}\nPlatform: {} {}\nApp directory contents: {:?}\nNode directory contents: {:?}",
+            node_executable.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            app_dir_contents,
+            node_dir_contents
+        ));
+    }
+    
+    // On Windows, verify the executable is actually executable
+    #[cfg(windows)]
+    {
+        if let Ok(metadata) = fs::metadata(&node_executable) {
+            if !metadata.is_file() {
+                return Err(anyhow::anyhow!(
+                    "Node.js executable path exists but is not a file: {}", 
+                    node_executable.display()
+                ));
+            }
+        } else {
+            return Err(anyhow::anyhow!(
+                "Cannot read metadata for Node.js executable: {}", 
+                node_executable.display()
+            ));
+        }
+    }
+    
+    // Verify app directory exists
+    if !app_path.exists() {
+        return Err(anyhow::anyhow!(
+            "App directory not found at: {}", 
+            app_path.display()
+        ));
+    }
+    
     // Change to app directory
-    env::set_current_dir(&app_path).context("Failed to change to app directory")?;
+    env::set_current_dir(&app_path)
+        .with_context(|| format!("Failed to change to app directory: {}", app_path.display()))?;
     
     // Find main script from package.json
     let main_script = find_main_script(&app_path)?;
     
     // Build command arguments
-    let mut cmd_args = vec![main_script];
+    let mut cmd_args = vec![main_script.clone()];
     cmd_args.extend(args.iter().cloned());
     
     // Execute Node.js application
@@ -198,7 +280,13 @@ fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context("Failed to execute Node.js application")?;
+        .with_context(|| format!(
+            "Failed to execute Node.js application\nExecutable: {}\nMain script: {}\nArgs: {:?}\nWorking directory: {}", 
+            node_executable.display(), 
+            main_script,
+            cmd_args,
+            app_path.display()
+        ))?;
     
     std::process::exit(status.code().unwrap_or(1));
 }
