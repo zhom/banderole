@@ -1,10 +1,14 @@
 # Banderole
 
-Create cross-platform single-executables for Node.js projects. Currently, only unix systems are supported.
+Create cross-platform single-executables for Node.js projects.
 
-Banderole bundles your Node.js app, all dependencies, and a portable Node binary into a single executable. On first launch, it unpacks to a cache directory for fast subsequent executions.
+Banderole bundles your Node.js app, all dependencies, and a portable Node binary into a single native executable. On first launch, it unpacks to a cache directory for fast subsequent executions.
 
 Unlike [Node.js SEA](https://nodejs.org/api/single-executable-applications.html) or [pkg](https://github.com/yao-pkg/pkg), banderole handles complex projects with dynamic imports and non-JavaScript files without requiring patches, but since it includes all dependencies by default, it has significantly larger filesize.
+
+## Requirements
+
+Banderole requires the Rust toolchain to be installed on your system to build portable executables.
 
 ## Installation
 
