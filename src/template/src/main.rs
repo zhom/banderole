@@ -64,13 +64,36 @@ fn get_cache_dir() -> Result<PathBuf> {
     Ok(cache_dir)
 }
 
+fn get_node_executable_path(app_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        // On Windows, Node.js is extracted to node/{platform}/node.exe
+        // Try to find the platform-specific subdirectory
+        let node_dir = app_dir.join("node");
+        
+        // Look for platform-specific subdirectories
+        if let Ok(entries) = fs::read_dir(&node_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let node_exe = path.join("node.exe");
+                    if node_exe.exists() {
+                        return node_exe;
+                    }
+                }
+            }
+        }
+        
+        // Fallback to direct path (shouldn't happen with new extraction logic)
+        node_dir.join("node.exe")
+    } else {
+        // On Unix systems, Node.js is in node/bin/node
+        app_dir.join("node").join("bin").join("node")
+    }
+}
+
 fn is_extraction_valid(app_dir: &Path) -> Result<bool> {
     let app_package_json = app_dir.join("app").join("package.json");
-    let node_executable = if cfg!(windows) {
-        app_dir.join("node").join("node.exe")
-    } else {
-        app_dir.join("node").join("bin").join("node")
-    };
+    let node_executable = get_node_executable_path(app_dir);
     
     let package_exists = app_package_json.exists();
     let node_exists = node_executable.exists();
@@ -200,11 +223,7 @@ fn extract_application(app_dir: &Path) -> Result<()> {
 
 fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
     let app_path = app_dir.join("app");
-    let node_executable = if cfg!(windows) {
-        app_dir.join("node").join("node.exe")
-    } else {
-        app_dir.join("node").join("bin").join("node")
-    };
+    let node_executable = get_node_executable_path(app_dir);
     
     // Verify Node.js executable exists and is accessible
     if !node_executable.exists() {
