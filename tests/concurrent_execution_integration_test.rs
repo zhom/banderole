@@ -3,6 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{BundlerTestHelper, TestCacheManager, TestProject, TestProjectManager};
 use serial_test::serial;
+#[cfg(windows)]
 use std::error::Error;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
@@ -28,6 +29,41 @@ async fn test_concurrent_first_launch() -> Result<()> {
         Some("concurrent-test"),
         false, // No compression for faster testing
     )?;
+
+    // Windows-specific debugging for executable creation
+    #[cfg(windows)]
+    {
+        eprintln!(
+            "Windows debug: Executable path created: {}",
+            executable_path.display()
+        );
+        eprintln!(
+            "Windows debug: Executable exists: {}",
+            executable_path.exists()
+        );
+        if executable_path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&executable_path) {
+                eprintln!("Windows debug: Executable size: {} bytes", metadata.len());
+                eprintln!("Windows debug: Executable is file: {}", metadata.is_file());
+            } else {
+                eprintln!("Windows debug: Cannot read executable metadata");
+            }
+        } else {
+            eprintln!("Windows debug: Executable does not exist!");
+            if let Some(parent) = executable_path.parent() {
+                eprintln!("Windows debug: Parent directory: {}", parent.display());
+                eprintln!("Windows debug: Parent exists: {}", parent.exists());
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    eprintln!("Windows debug: Parent directory contents:");
+                    for entry in entries.flatten() {
+                        eprintln!("  - {}", entry.file_name().to_string_lossy());
+                    }
+                } else {
+                    eprintln!("Windows debug: Cannot read parent directory");
+                }
+            }
+        }
+    }
 
     // Clear any existing cache to ensure we test first launch
     TestCacheManager::clear_application_cache()?;
@@ -183,6 +219,50 @@ async fn test_cached_concurrent_execution() -> Result<()> {
         Some("cached-concurrent-test"),
         false,
     )?;
+
+    // Windows-specific debugging for executable creation
+    #[cfg(windows)]
+    {
+        eprintln!(
+            "Windows debug (cached): Executable path created: {}",
+            executable_path.display()
+        );
+        eprintln!(
+            "Windows debug (cached): Executable exists: {}",
+            executable_path.exists()
+        );
+        if executable_path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&executable_path) {
+                eprintln!(
+                    "Windows debug (cached): Executable size: {} bytes",
+                    metadata.len()
+                );
+                eprintln!(
+                    "Windows debug (cached): Executable is file: {}",
+                    metadata.is_file()
+                );
+            } else {
+                eprintln!("Windows debug (cached): Cannot read executable metadata");
+            }
+        } else {
+            eprintln!("Windows debug (cached): Executable does not exist!");
+            if let Some(parent) = executable_path.parent() {
+                eprintln!(
+                    "Windows debug (cached): Parent directory: {}",
+                    parent.display()
+                );
+                eprintln!("Windows debug (cached): Parent exists: {}", parent.exists());
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    eprintln!("Windows debug (cached): Parent directory contents:");
+                    for entry in entries.flatten() {
+                        eprintln!("  - {}", entry.file_name().to_string_lossy());
+                    }
+                } else {
+                    eprintln!("Windows debug (cached): Cannot read parent directory");
+                }
+            }
+        }
+    }
 
     // Clear cache and run once to populate it
     TestCacheManager::clear_application_cache()?;
