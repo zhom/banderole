@@ -3,6 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{BundlerTestHelper, TestCacheManager, TestProject, TestProjectManager};
 use serial_test::serial;
+use std::error::Error;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -58,7 +59,26 @@ async fn test_concurrent_first_launch() -> Result<()> {
                 &[&format!("--thread-id={i}")],
                 &[("TEST_VAR", &format!("thread_{i}"))],
             )
-            .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
+            .map_err(|e| {
+                #[cfg(windows)]
+                {
+                    eprintln!(
+                        "Windows debug - Thread {}: Failed to execute binary at {}",
+                        i,
+                        executable_path.as_ref().display()
+                    );
+                    eprintln!("Windows debug - Thread {}: Error details: {:?}", i, e);
+                    eprintln!("Windows debug - Thread {}: Error chain:", i);
+                    let mut source = e.source();
+                    let mut level = 0;
+                    while let Some(err) = source {
+                        eprintln!("Windows debug - Thread {}: Level {}: {}", i, level, err);
+                        source = err.source();
+                        level += 1;
+                    }
+                }
+                anyhow::anyhow!("Failed to execute binary: {}", e)
+            })?;
 
             let duration = thread_start.elapsed();
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -199,7 +219,32 @@ async fn test_cached_concurrent_execution() -> Result<()> {
                 &[],
                 &[("TEST_VAR", &format!("cached_{i}"))],
             )
-            .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
+            .map_err(|e| {
+                #[cfg(windows)]
+                {
+                    eprintln!(
+                        "Windows debug - Cached thread {}: Failed to execute binary at {}",
+                        i,
+                        executable_path.as_ref().display()
+                    );
+                    eprintln!(
+                        "Windows debug - Cached thread {}: Error details: {:?}",
+                        i, e
+                    );
+                    eprintln!("Windows debug - Cached thread {}: Error chain:", i);
+                    let mut source = e.source();
+                    let mut level = 0;
+                    while let Some(err) = source {
+                        eprintln!(
+                            "Windows debug - Cached thread {}: Level {}: {}",
+                            i, level, err
+                        );
+                        source = err.source();
+                        level += 1;
+                    }
+                }
+                anyhow::anyhow!("Failed to execute binary: {}", e)
+            })?;
 
             let duration = thread_start.elapsed();
 
