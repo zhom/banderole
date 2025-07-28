@@ -151,29 +151,16 @@ set "READY_FILE=!APP_DIR!\.ready"
 set "QUEUE_DIR=!APP_DIR!\.queue"
 set "EXTRACTION_PID_FILE=!APP_DIR!\.extraction.pid"
 
-for /f "tokens=2 delims==" %%i in ('wmic process where "processid=%PID%" get processid /value 2^>nul ^| find "ProcessId"') do set "CURRENT_PID=%%i"
+rem Get current process ID
+set "CURRENT_PID=%RANDOM%"
+for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq cmd.exe" /fo csv ^| find /v "ImageName"') do (
+    set "CURRENT_PID=%%~i"
+    goto :got_pid
+)
+:got_pid
 if "!CURRENT_PID!"=="" set "CURRENT_PID=%RANDOM%"
 
-:run_app
-cd /d "!APP_DIR!\app" || exit /b 1
-
-for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main ^|^| 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
-if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
-
-if exist "!MAIN_SCRIPT!" (
-    "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
-    exit /b !errorlevel!
-) else (
-    echo Error: Main script '!MAIN_SCRIPT!' not found >&2
-    exit /b 1
-)
-
-:cleanup_queue
-if defined QUEUE_ENTRY if exist "!QUEUE_ENTRY!" (
-    del "!QUEUE_ENTRY!" 2>nul
-)
-exit /b
-
+rem Check if app is already extracted and ready
 if exist "!READY_FILE!" if exist "!APP_DIR!\app\package.json" if exist "!APP_DIR!\node\node.exe" (
     goto run_app
 )
@@ -231,7 +218,9 @@ if not exist "!CACHE_DIR!" mkdir "!CACHE_DIR!"
 if not exist "!APP_DIR!" mkdir "!APP_DIR!"
 
 set "TEMP_ZIP=%TEMP%\banderole-bundle-!CURRENT_PID!-%RANDOM%.zip"
-powershell -NoProfile -Command "$content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes('!TEMP_ZIP!', [System.Convert]::FromBase64String($data))"
+powershell -NoProfile -Command "$env:CURRENT_PID='!CURRENT_PID!'; $tempZip = $env:TEMP + '\banderole-bundle-' + $env:CURRENT_PID + '-' + (Get-Random) + '.zip'; $content = Get-Content '%~f0' -Raw; $dataStart = $content.IndexOf('__DATA__') + 8; $data = $content.Substring($dataStart).Trim(); [System.IO.File]::WriteAllBytes($tempZip, [System.Convert]::FromBase64String($data)); Write-Output $tempZip" > "%TEMP%\temp_zip_path.txt"
+set /p TEMP_ZIP=<"%TEMP%\temp_zip_path.txt"
+del "%TEMP%\temp_zip_path.txt" 2>nul
 
 if not exist "!TEMP_ZIP!" (
     echo Error: Failed to extract bundle data >&2
@@ -285,6 +274,26 @@ call :cleanup_queue
 rmdir "!LOCK_FILE!" 2>nul
 
 goto run_app
+
+:run_app
+cd /d "!APP_DIR!\app" || exit /b 1
+
+for /f "delims=" %%i in ('"!APP_DIR!\node\node.exe" -e "try {{ console.log(require('./package.json').main ^|^| 'index.js'); }} catch(e) {{ console.log('index.js'); }}" 2^>nul') do set "MAIN_SCRIPT=%%i"
+if "!MAIN_SCRIPT!"=="" set "MAIN_SCRIPT=index.js"
+
+if exist "!MAIN_SCRIPT!" (
+    "!APP_DIR!\node\node.exe" "!MAIN_SCRIPT!" %*
+    exit /b !errorlevel!
+) else (
+    echo Error: Main script '!MAIN_SCRIPT!' not found >&2
+    exit /b 1
+)
+
+:cleanup_queue
+if defined QUEUE_ENTRY if exist "!QUEUE_ENTRY!" (
+    del "!QUEUE_ENTRY!" 2>nul
+)
+exit /b
 
 :cleanup_stale_locks
 if exist "!LOCK_FILE!" (
