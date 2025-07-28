@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -590,6 +590,41 @@ impl BundlerTestHelper {
         args: &[&str],
         env_vars: &[(&str, &str)],
     ) -> Result<std::process::Output> {
+        // Windows-specific debugging for "program not found" errors
+        #[cfg(windows)]
+        {
+            if !executable_path.exists() {
+                anyhow::bail!(
+                    "Windows: Executable does not exist at path: {}\nParent directory exists: {}\nParent directory contents: {:?}",
+                    executable_path.display(),
+                    executable_path.parent().map(|p| p.exists()).unwrap_or(false),
+                    executable_path.parent()
+                        .and_then(|p| fs::read_dir(p).ok())
+                        .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())
+                        .unwrap_or_else(|| vec!["Could not read directory".to_string()])
+                );
+            }
+
+            if let Ok(metadata) = fs::metadata(executable_path) {
+                if !metadata.is_file() {
+                    anyhow::bail!(
+                        "Windows: Path exists but is not a file: {} (is_dir: {})",
+                        executable_path.display(),
+                        metadata.is_dir()
+                    );
+                }
+                println!(
+                    "Windows debug: Executable found, size: {} bytes",
+                    metadata.len()
+                );
+            } else {
+                anyhow::bail!(
+                    "Windows: Cannot read metadata for executable: {}",
+                    executable_path.display()
+                );
+            }
+        }
+
         // Make executable on Unix
         #[cfg(unix)]
         {
@@ -607,7 +642,15 @@ impl BundlerTestHelper {
             cmd.env(key, value);
         }
 
-        let output = cmd.output()?;
+        let output = cmd.output().with_context(|| {
+            format!(
+                "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
+                executable_path.display(),
+                args,
+                env_vars,
+                std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())
+            )
+        })?;
         Ok(output)
     }
 
