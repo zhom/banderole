@@ -100,7 +100,12 @@ fn extract_application(app_dir: &Path) -> Result<()> {
         }
         
         // Determine if this is a directory entry
-        let is_directory = file_name.ends_with('/');
+        let is_directory = file_name.ends_with('/') || file.is_dir();
+        
+        // Skip empty directory entries that are just the trailing slash
+        if is_directory && (file_name == "/" || file_name.trim_matches('/').is_empty()) {
+            continue;
+        }
         
         // Remove trailing slash for proper path construction
         let clean_file_name = if is_directory {
@@ -109,14 +114,23 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             file_name
         };
         
+        // Skip if the cleaned name is empty (shouldn't happen but be safe)
+        if clean_file_name.is_empty() {
+            continue;
+        }
+        
         // Use proper path handling instead of string replacement
         // Split the path by forward slashes and join using PathBuf for proper platform handling
-        let path_components: Vec<&str> = clean_file_name.split('/').collect();
+        let path_components: Vec<&str> = clean_file_name.split('/').filter(|s| !s.is_empty()).collect();
+        
+        // Skip if no valid path components
+        if path_components.is_empty() {
+            continue;
+        }
+        
         let mut outpath = app_dir.to_path_buf();
         for component in path_components {
-            if !component.is_empty() {
-                outpath = outpath.join(component);
-            }
+            outpath = outpath.join(component);
         }
         
         // Ensure the path is within the app directory (security check)
@@ -127,16 +141,16 @@ fn extract_application(app_dir: &Path) -> Result<()> {
         if is_directory {
             // Directory entry - create the directory
             fs::create_dir_all(&outpath)
-                .with_context(|| format!("Failed to create directory at {}", outpath.display()))?;
+                .with_context(|| format!("Failed to create directory '{}' from zip entry '{}'", outpath.display(), file_name))?;
         } else {
             // File entry - create parent directories first, then the file
             if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create parent directory at {}", parent.display()))?;
+                    .with_context(|| format!("Failed to create parent directory '{}' for file '{}'", parent.display(), outpath.display()))?;
             }
             
             let mut outfile = fs::File::create(&outpath)
-                .with_context(|| format!("Failed to create output file at {}", outpath.display()))?;
+                .with_context(|| format!("Failed to create output file '{}' from zip entry '{}'", outpath.display(), file_name))?;
             std::io::copy(&mut file, &mut outfile)
                 .with_context(|| format!("Failed to extract file to {}", outpath.display()))?;
             
