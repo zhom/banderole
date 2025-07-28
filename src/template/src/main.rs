@@ -102,9 +102,16 @@ fn extract_application(app_dir: &Path) -> Result<()> {
         // Determine if this is a directory entry
         let is_directory = file_name.ends_with('/');
         
+        // Remove trailing slash for proper path construction
+        let clean_file_name = if is_directory {
+            file_name.trim_end_matches('/')
+        } else {
+            file_name
+        };
+        
         // Use proper path handling instead of string replacement
         // Split the path by forward slashes and join using PathBuf for proper platform handling
-        let path_components: Vec<&str> = file_name.split('/').collect();
+        let path_components: Vec<&str> = clean_file_name.split('/').collect();
         let mut outpath = app_dir.to_path_buf();
         for component in path_components {
             if !component.is_empty() {
