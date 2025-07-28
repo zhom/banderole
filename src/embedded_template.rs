@@ -13,9 +13,9 @@ impl EmbeddedTemplate {
     /// Get the embedded template files
     pub fn new() -> Self {
         Self {
-            cargo_toml: include_str!("./template/crg.toml"),
-            build_rs: include_str!("./template/build.rs"),
-            main_rs: include_str!("./template/src/main.rs"),
+            cargo_toml: include_str!("template/crg.toml"),
+            build_rs: include_str!("template/build.rs"),
+            main_rs: include_str!("template/src/main.rs"),
         }
     }
 

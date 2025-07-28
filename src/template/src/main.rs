@@ -89,13 +89,29 @@ fn extract_application(app_dir: &Path) -> Result<()> {
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).context("Failed to read zip entry")?;
         
-        // Normalize the file path for the current platform
-        // Zip files use forward slashes, but we need proper path separators for the OS
+        // Get the file name from the zip entry
         let file_name = file.name();
         
-        // Use Path::new to properly handle path separators across platforms
-        let normalized_path = Path::new(file_name);
-        let outpath = app_dir.join(normalized_path);
+        // Skip entries with invalid characters or paths
+        if file_name.is_empty() || file_name.contains('\0') {
+            continue;
+        }
+        
+        // Normalize path separators for the current platform
+        // Zip files always use forward slashes, convert to platform-specific separators
+        let normalized_name = if cfg!(windows) {
+            file_name.replace('/', "\\")
+        } else {
+            file_name.to_string()
+        };
+        
+        // Create the output path using platform-specific path handling
+        let outpath = app_dir.join(&normalized_name);
+        
+        // Ensure the path is within the app directory (security check)
+        if !outpath.starts_with(app_dir) {
+            continue;
+        }
         
         if file_name.ends_with('/') {
             // Directory
