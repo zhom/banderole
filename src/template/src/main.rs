@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     
     // Get cache directory
-    let cache_dir = get_cache_dir()?;
+    let cache_dir = get_cache_dir().context("Failed to determine cache directory")?;
     let app_dir = cache_dir.join(&BUILD_ID);
     let ready_file = app_dir.join(".ready");
     
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         .create(true)
         .write(true)
         .open(&lock_file_path)
-        .context("Failed to create lock file")?;
+        .with_context(|| format!("Failed to create lock file at {}", lock_file_path.display()))?;
     
     // Acquire exclusive lock
     lock_file.lock_exclusive().context("Failed to acquire extraction lock")?;
@@ -44,10 +44,12 @@ fn main() -> Result<()> {
     }
     
     // Extract application if needed
-    extract_application(&app_dir)?;
+    extract_application(&app_dir)
+        .with_context(|| format!("Failed to extract application to {}", app_dir.display()))?;
     
     // Mark as ready
-    fs::write(&ready_file, "ready")?;
+    fs::write(&ready_file, "ready")
+        .with_context(|| format!("Failed to create ready file at {}", ready_file.display()))?;
     
     // Release lock
     lock_file.unlock().context("Failed to release extraction lock")?;
@@ -97,16 +99,15 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             continue;
         }
         
-        // Normalize path separators for the current platform
-        // Zip files always use forward slashes, convert to platform-specific separators
-        let normalized_name = if cfg!(windows) {
-            file_name.replace('/', "\\")
-        } else {
-            file_name.to_string()
-        };
-        
-        // Create the output path using platform-specific path handling
-        let outpath = app_dir.join(&normalized_name);
+        // Use proper path handling instead of string replacement
+        // Split the path by forward slashes and join using PathBuf for proper platform handling
+        let path_components: Vec<&str> = file_name.split('/').collect();
+        let mut outpath = app_dir.to_path_buf();
+        for component in path_components {
+            if !component.is_empty() {
+                outpath = outpath.join(component);
+            }
+        }
         
         // Ensure the path is within the app directory (security check)
         if !outpath.starts_with(app_dir) {
@@ -115,15 +116,19 @@ fn extract_application(app_dir: &Path) -> Result<()> {
         
         if file_name.ends_with('/') {
             // Directory
-            fs::create_dir_all(&outpath).context("Failed to create directory")?;
+            fs::create_dir_all(&outpath)
+                .with_context(|| format!("Failed to create directory at {}", outpath.display()))?;
         } else {
             // File
             if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).context("Failed to create parent directory")?;
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create parent directory at {}", parent.display()))?;
             }
             
-            let mut outfile = fs::File::create(&outpath).context("Failed to create output file")?;
-            std::io::copy(&mut file, &mut outfile).context("Failed to extract file")?;
+            let mut outfile = fs::File::create(&outpath)
+                .with_context(|| format!("Failed to create output file at {}", outpath.display()))?;
+            std::io::copy(&mut file, &mut outfile)
+                .with_context(|| format!("Failed to extract file to {}", outpath.display()))?;
             
             // Ensure file is fully written before setting permissions
             outfile.sync_all().context("Failed to sync file to disk")?;
