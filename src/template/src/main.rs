@@ -99,6 +99,9 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             continue;
         }
         
+        // Determine if this is a directory entry
+        let is_directory = file_name.ends_with('/');
+        
         // Use proper path handling instead of string replacement
         // Split the path by forward slashes and join using PathBuf for proper platform handling
         let path_components: Vec<&str> = file_name.split('/').collect();
@@ -114,12 +117,12 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             continue;
         }
         
-        if file_name.ends_with('/') {
-            // Directory
+        if is_directory {
+            // Directory entry - create the directory
             fs::create_dir_all(&outpath)
                 .with_context(|| format!("Failed to create directory at {}", outpath.display()))?;
         } else {
-            // File
+            // File entry - create parent directories first, then the file
             if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create parent directory at {}", parent.display()))?;
