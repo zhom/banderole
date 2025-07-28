@@ -8,9 +8,7 @@ impl RustToolchain {
     /// Check if Rust toolchain is available and properly configured
     pub fn check_availability() -> Result<()> {
         // Check if rustc is available
-        let rustc_output = Command::new("rustc")
-            .arg("--version")
-            .output();
+        let rustc_output = Command::new("rustc").arg("--version").output();
 
         match rustc_output {
             Ok(output) if output.status.success() => {
@@ -25,9 +23,7 @@ impl RustToolchain {
         }
 
         // Check if cargo is available
-        let cargo_output = Command::new("cargo")
-            .arg("--version")
-            .output();
+        let cargo_output = Command::new("cargo").arg("--version").output();
 
         match cargo_output {
             Ok(output) if output.status.success() => {
@@ -42,9 +38,7 @@ impl RustToolchain {
         }
 
         // Check if rustup is available (for target management)
-        let rustup_output = Command::new("rustup")
-            .arg("--version")
-            .output();
+        let rustup_output = Command::new("rustup").arg("--version").output();
 
         match rustup_output {
             Ok(output) if output.status.success() => {
@@ -65,16 +59,16 @@ impl RustToolchain {
     pub fn ensure_target_installed(target: &str) -> Result<()> {
         // Check if target is already installed
         let output = Command::new("rustup")
-            .args(&["target", "list", "--installed"])
+            .args(["target", "list", "--installed"])
             .output()
             .context("Failed to check installed targets")?;
 
         let installed_targets = String::from_utf8_lossy(&output.stdout);
 
         if !installed_targets.contains(target) {
-            println!("Installing Rust target: {}", target);
+            println!("Installing Rust target: {target}");
             let install_output = Command::new("rustup")
-                .args(&["target", "add", target])
+                .args(["target", "add", target])
                 .output()
                 .context("Failed to install Rust target")?;
 
@@ -82,9 +76,9 @@ impl RustToolchain {
                 let stderr = String::from_utf8_lossy(&install_output.stderr);
                 anyhow::bail!("Failed to install target {}:\n{}", target, stderr);
             }
-            println!("Successfully installed target: {}", target);
+            println!("Successfully installed target: {target}");
         } else {
-            println!("Target {} is already installed", target);
+            println!("Target {target} is already installed");
         }
 
         Ok(())
@@ -92,8 +86,7 @@ impl RustToolchain {
 
     /// Get helpful installation instructions for the user
     pub fn get_installation_instructions() -> String {
-        format!(
-            r#"
+        r#"
 Rust toolchain is required to build portable executables.
 
 To install Rust:
@@ -109,6 +102,6 @@ For automated installation:
 After installation, you can use banderole to create portable Node.js executables
 without requiring users to have Node.js or Rust installed.
 "#
-        )
+        .to_string()
     }
 }

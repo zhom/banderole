@@ -27,18 +27,15 @@ impl EmbeddedTemplate {
 
         // Write Cargo.toml
         let cargo_toml_path = build_dir.join("Cargo.toml");
-        fs::write(&cargo_toml_path, self.cargo_toml)
-            .context("Failed to write Cargo.toml")?;
+        fs::write(&cargo_toml_path, self.cargo_toml).context("Failed to write Cargo.toml")?;
 
         // Write build.rs
         let build_rs_path = build_dir.join("build.rs");
-        fs::write(&build_rs_path, self.build_rs)
-            .context("Failed to write build.rs")?;
+        fs::write(&build_rs_path, self.build_rs).context("Failed to write build.rs")?;
 
         // Write src/main.rs
         let main_rs_path = src_dir.join("main.rs");
-        fs::write(&main_rs_path, self.main_rs)
-            .context("Failed to write src/main.rs")?;
+        fs::write(&main_rs_path, self.main_rs).context("Failed to write src/main.rs")?;
 
         Ok(())
     }
