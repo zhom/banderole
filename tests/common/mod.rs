@@ -556,7 +556,7 @@ impl BundlerTestHelper {
         // Find the created executable
         let executable_name = custom_name.unwrap_or("test-project");
         let executable_path = output_dir.join(if cfg!(windows) {
-            format!("{executable_name}.bat")
+            format!("{executable_name}.exe")
         } else {
             executable_name.to_string()
         });
@@ -564,7 +564,7 @@ impl BundlerTestHelper {
         // Check if collision avoidance was used
         if !executable_path.exists() || !executable_path.is_file() {
             let bundle_executable_path = output_dir.join(if cfg!(windows) {
-                format!("{executable_name}-bundle.bat")
+                format!("{executable_name}-bundle.exe")
             } else {
                 format!("{executable_name}-bundle")
             });
