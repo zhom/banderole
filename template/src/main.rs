@@ -5,6 +5,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zip::ZipArchive;
+use directories::BaseDirs;
 
 // These will be replaced during the build process with actual embedded data
 // The build script will generate a data.rs file with the actual data
@@ -34,22 +35,7 @@ fn main() -> Result<()> {
 }
 
 fn get_cache_dir() -> Result<PathBuf> {
-    let cache_dir = if let Some(xdg_cache) = env::var_os("XDG_CACHE_HOME") {
-        PathBuf::from(xdg_cache).join("banderole")
-    } else if let Some(home) = env::var_os("HOME") {
-        PathBuf::from(home).join(".cache").join("banderole")
-    } else if cfg!(windows) {
-        if let Some(appdata) = env::var_os("LOCALAPPDATA") {
-            PathBuf::from(appdata).join("banderole")
-        } else if let Some(temp) = env::var_os("TEMP") {
-            PathBuf::from(temp).join("banderole-cache")
-        } else {
-            PathBuf::from("C:\\temp\\banderole-cache")
-        }
-    } else {
-        PathBuf::from("/tmp/banderole-cache")
-    };
-    
+    let cache_dir = BaseDirs::new().unwrap().cache_dir().join("banderole");    
     fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
     Ok(cache_dir)
 }
