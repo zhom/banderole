@@ -52,12 +52,13 @@ async fn test_concurrent_first_launch() -> Result<()> {
 
             let thread_start = Instant::now();
 
-            // Execute the binary
-            let output = Command::new(executable_path.as_ref())
-                .env("TEST_VAR", format!("thread_{i}"))
-                .args(&[format!("--thread-id={i}")])
-                .output()
-                .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
+            // Execute the binary using the test helper
+            let output = BundlerTestHelper::run_executable(
+                executable_path.as_ref(),
+                &[&format!("--thread-id={i}")],
+                &[("TEST_VAR", &format!("thread_{i}"))],
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
 
             let duration = thread_start.elapsed();
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -167,9 +168,8 @@ async fn test_cached_concurrent_execution() -> Result<()> {
     TestCacheManager::clear_application_cache()?;
 
     println!("Populating cache with initial run...");
-    let initial_output = Command::new(&executable_path)
-        .env("TEST_VAR", "initial")
-        .output()?;
+    let initial_output =
+        BundlerTestHelper::run_executable(&executable_path, &[], &[("TEST_VAR", "initial")])?;
 
     assert!(
         initial_output.status.success(),
@@ -194,10 +194,12 @@ async fn test_cached_concurrent_execution() -> Result<()> {
 
             let thread_start = Instant::now();
 
-            let output = Command::new(executable_path.as_ref())
-                .env("TEST_VAR", format!("cached_{i}"))
-                .output()
-                .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
+            let output = BundlerTestHelper::run_executable(
+                executable_path.as_ref(),
+                &[],
+                &[("TEST_VAR", &format!("cached_{i}"))],
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to execute binary: {}", e))?;
 
             let duration = thread_start.elapsed();
 
