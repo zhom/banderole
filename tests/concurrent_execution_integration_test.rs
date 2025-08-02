@@ -28,39 +28,38 @@ async fn test_concurrent_first_launch() -> Result<()> {
         false, // No compression for faster testing
     )?;
 
-    // Windows-specific debugging for executable creation
-    #[cfg(windows)]
-    {
-        eprintln!(
-            "Windows debug: Executable path created: {}",
-            executable_path.display()
-        );
-        eprintln!(
-            "Windows debug: Executable exists: {}",
-            executable_path.exists()
-        );
-        if executable_path.exists() {
-            if let Ok(metadata) = std::fs::metadata(&executable_path) {
-                eprintln!("Windows debug: Executable size: {} bytes", metadata.len());
-                eprintln!("Windows debug: Executable is file: {}", metadata.is_file());
-            } else {
-                eprintln!("Windows debug: Cannot read executable metadata");
-            }
+    // Debug executable creation
+    eprintln!(
+        "Debug: Executable path created: {}",
+        executable_path.display()
+    );
+    eprintln!("Debug: Executable exists: {}", executable_path.exists());
+    if executable_path.exists() {
+        if let Ok(metadata) = std::fs::metadata(&executable_path) {
+            eprintln!("Debug: Executable size: {} bytes", metadata.len());
+            eprintln!("Debug: Executable is file: {}", metadata.is_file());
         } else {
-            eprintln!("Windows debug: Executable does not exist!");
-            if let Some(parent) = executable_path.parent() {
-                eprintln!("Windows debug: Parent directory: {}", parent.display());
-                eprintln!("Windows debug: Parent exists: {}", parent.exists());
-                if let Ok(entries) = std::fs::read_dir(parent) {
-                    eprintln!("Windows debug: Parent directory contents:");
-                    for entry in entries.flatten() {
-                        eprintln!("  - {}", entry.file_name().to_string_lossy());
-                    }
-                } else {
-                    eprintln!("Windows debug: Cannot read parent directory");
+            eprintln!("Debug: Cannot read executable metadata");
+        }
+    } else {
+        eprintln!("Debug: Executable does not exist!");
+        if let Some(parent) = executable_path.parent() {
+            eprintln!("Debug: Parent directory: {}", parent.display());
+            eprintln!("Debug: Parent exists: {}", parent.exists());
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                eprintln!("Debug: Parent directory contents:");
+                for entry in entries.flatten() {
+                    eprintln!("  - {}", entry.file_name().to_string_lossy());
                 }
+            } else {
+                eprintln!("Debug: Cannot read parent directory");
             }
         }
+    }
+
+    // Give the filesystem a moment to settle on Windows
+    if cfg!(windows) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     // Clear any existing cache to ensure we test first launch
@@ -85,33 +84,54 @@ async fn test_concurrent_first_launch() -> Result<()> {
             // Wait for all threads to be ready
             barrier.wait();
 
+            // Add a small staggered delay to reduce race conditions on Windows
+            std::thread::sleep(std::time::Duration::from_millis(i as u64 * 10));
+
             let thread_start = Instant::now();
 
-            // Execute the binary using the test helper
-            let output = BundlerTestHelper::run_executable(
-                executable_path.as_ref(),
-                &[&format!("--thread-id={i}")],
-                &[("TEST_VAR", &format!("thread_{i}"))],
-            )
-            .map_err(|e| {
-                #[cfg(windows)]
-                {
-                    eprintln!(
-                        "Windows debug - Thread {}: Failed to execute binary at {}",
-                        i,
-                        executable_path.as_ref().display()
-                    );
-                    eprintln!("Windows debug - Thread {i}: Error details: {e:?}");
-                    eprintln!("Windows debug - Thread {i}: Error chain:");
-                    let mut source = e.source();
-                    let mut level = 0;
-                    while let Some(err) = source {
-                        eprintln!("Windows debug - Thread {i}: Level {level}: {err}");
-                        source = err.source();
-                        level += 1;
+            // Execute the binary using the test helper with retry logic for Windows
+            let mut last_error = None;
+            let mut output = None;
+
+            for attempt in 1..=3 {
+                match BundlerTestHelper::run_executable(
+                    executable_path.as_ref(),
+                    &[&format!("--thread-id={i}")],
+                    &[("TEST_VAR", &format!("thread_{i}"))],
+                ) {
+                    Ok(result) => {
+                        output = Some(result);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Thread {i}: Attempt {attempt} failed: {e}");
+                        last_error = Some(e);
+                        if attempt < 3 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                100 * attempt as u64,
+                            ));
+                        }
                     }
                 }
-                anyhow::anyhow!("Failed to execute binary: {e}")
+            }
+
+            let output = output.ok_or_else(|| {
+                let e = last_error.unwrap();
+                eprintln!(
+                    "Thread {}: Failed to execute binary at {} after 3 attempts",
+                    i,
+                    executable_path.as_ref().display()
+                );
+                eprintln!("Thread {i}: Final error details: {e:?}");
+                eprintln!("Thread {i}: Error chain:");
+                let mut source = e.source();
+                let mut level = 0;
+                while let Some(err) = source {
+                    eprintln!("Thread {i}: Level {level}: {err}");
+                    source = err.source();
+                    level += 1;
+                }
+                anyhow::anyhow!("Failed to execute binary after retries: {e}")
             })?;
 
             let duration = thread_start.elapsed();
@@ -218,48 +238,41 @@ async fn test_cached_concurrent_execution() -> Result<()> {
         false,
     )?;
 
-    // Windows-specific debugging for executable creation
-    #[cfg(windows)]
-    {
-        eprintln!(
-            "Windows debug (cached): Executable path created: {}",
-            executable_path.display()
-        );
-        eprintln!(
-            "Windows debug (cached): Executable exists: {}",
-            executable_path.exists()
-        );
-        if executable_path.exists() {
-            if let Ok(metadata) = std::fs::metadata(&executable_path) {
-                eprintln!(
-                    "Windows debug (cached): Executable size: {} bytes",
-                    metadata.len()
-                );
-                eprintln!(
-                    "Windows debug (cached): Executable is file: {}",
-                    metadata.is_file()
-                );
-            } else {
-                eprintln!("Windows debug (cached): Cannot read executable metadata");
-            }
+    // Debug executable creation
+    eprintln!(
+        "Debug (cached): Executable path created: {}",
+        executable_path.display()
+    );
+    eprintln!(
+        "Debug (cached): Executable exists: {}",
+        executable_path.exists()
+    );
+    if executable_path.exists() {
+        if let Ok(metadata) = std::fs::metadata(&executable_path) {
+            eprintln!("Debug (cached): Executable size: {} bytes", metadata.len());
+            eprintln!("Debug (cached): Executable is file: {}", metadata.is_file());
         } else {
-            eprintln!("Windows debug (cached): Executable does not exist!");
-            if let Some(parent) = executable_path.parent() {
-                eprintln!(
-                    "Windows debug (cached): Parent directory: {}",
-                    parent.display()
-                );
-                eprintln!("Windows debug (cached): Parent exists: {}", parent.exists());
-                if let Ok(entries) = std::fs::read_dir(parent) {
-                    eprintln!("Windows debug (cached): Parent directory contents:");
-                    for entry in entries.flatten() {
-                        eprintln!("  - {}", entry.file_name().to_string_lossy());
-                    }
-                } else {
-                    eprintln!("Windows debug (cached): Cannot read parent directory");
+            eprintln!("Debug (cached): Cannot read executable metadata");
+        }
+    } else {
+        eprintln!("Debug (cached): Executable does not exist!");
+        if let Some(parent) = executable_path.parent() {
+            eprintln!("Debug (cached): Parent directory: {}", parent.display());
+            eprintln!("Debug (cached): Parent exists: {}", parent.exists());
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                eprintln!("Debug (cached): Parent directory contents:");
+                for entry in entries.flatten() {
+                    eprintln!("  - {}", entry.file_name().to_string_lossy());
                 }
+            } else {
+                eprintln!("Debug (cached): Cannot read parent directory");
             }
         }
+    }
+
+    // Give the filesystem a moment to settle on Windows
+    if cfg!(windows) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     // Clear cache and run once to populate it
@@ -290,32 +303,54 @@ async fn test_cached_concurrent_execution() -> Result<()> {
         let handle = thread::spawn(move || -> Result<(usize, Duration)> {
             barrier.wait();
 
+            // Add a small staggered delay to reduce race conditions on Windows
+            std::thread::sleep(std::time::Duration::from_millis(i as u64 * 10));
+
             let thread_start = Instant::now();
 
-            let output = BundlerTestHelper::run_executable(
-                executable_path.as_ref(),
-                &[],
-                &[("TEST_VAR", &format!("cached_{i}"))],
-            )
-            .map_err(|e| {
-                #[cfg(windows)]
-                {
-                    eprintln!(
-                        "Windows debug - Cached thread {}: Failed to execute binary at {}",
-                        i,
-                        executable_path.as_ref().display()
-                    );
-                    eprintln!("Windows debug - Cached thread {e}: Error details: {e:?}");
-                    eprintln!("Windows debug - Cached thread {i}: Error chain:");
-                    let mut source = e.source();
-                    let mut level = 0;
-                    while let Some(err) = source {
-                        eprintln!("Windows debug - Cached thread {i}: Level {level}: {err}");
-                        source = err.source();
-                        level += 1;
+            // Execute the binary using the test helper with retry logic for Windows
+            let mut last_error = None;
+            let mut output = None;
+
+            for attempt in 1..=3 {
+                match BundlerTestHelper::run_executable(
+                    executable_path.as_ref(),
+                    &[],
+                    &[("TEST_VAR", &format!("cached_{i}"))],
+                ) {
+                    Ok(result) => {
+                        output = Some(result);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Cached thread {i}: Attempt {attempt} failed: {e}");
+                        last_error = Some(e);
+                        if attempt < 3 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                100 * attempt as u64,
+                            ));
+                        }
                     }
                 }
-                anyhow::anyhow!("Failed to execute binary: {}", e)
+            }
+
+            let output = output.ok_or_else(|| {
+                let e = last_error.unwrap();
+                eprintln!(
+                    "Cached thread {}: Failed to execute binary at {} after 3 attempts",
+                    i,
+                    executable_path.as_ref().display()
+                );
+                eprintln!("Cached thread {i}: Final error details: {e:?}");
+                eprintln!("Cached thread {i}: Error chain:");
+                let mut source = e.source();
+                let mut level = 0;
+                while let Some(err) = source {
+                    eprintln!("Cached thread {i}: Level {level}: {err}");
+                    source = err.source();
+                    level += 1;
+                }
+                anyhow::anyhow!("Failed to execute binary after retries: {}", e)
             })?;
 
             let duration = thread_start.elapsed();

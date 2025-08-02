@@ -495,7 +495,11 @@ impl BundlerTestHelper {
     /// Get the path to the banderole binary
     pub fn get_bundler_path() -> Result<PathBuf> {
         let target_dir = std::env::current_dir()?.join("target");
-        let bundler_path = target_dir.join("debug/banderole");
+        let bundler_path = if cfg!(windows) {
+            target_dir.join("debug/banderole.exe")
+        } else {
+            target_dir.join("debug/banderole")
+        };
 
         if !bundler_path.exists() {
             // Build the bundler if it doesn't exist
@@ -553,6 +557,18 @@ impl BundlerTestHelper {
             );
         }
 
+        // Debug: Print bundler output
+        println!(
+            "Bundler stdout: {}",
+            String::from_utf8_lossy(&bundle_output.stdout)
+        );
+        if !bundle_output.stderr.is_empty() {
+            println!(
+                "Bundler stderr: {}",
+                String::from_utf8_lossy(&bundle_output.stderr)
+            );
+        }
+
         // Find the created executable
         let executable_name = custom_name.unwrap_or("test-project");
         let executable_path = output_dir.join(if cfg!(windows) {
@@ -575,9 +591,31 @@ impl BundlerTestHelper {
         }
 
         if !executable_path.exists() {
+            // List directory contents for debugging
+            let dir_contents = fs::read_dir(output_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .map(|entry| {
+                            let path = entry.path();
+                            let metadata = fs::metadata(&path).ok();
+                            format!(
+                                "{} (size: {}, is_file: {})",
+                                entry.file_name().to_string_lossy(),
+                                metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+                                metadata.as_ref().map(|m| m.is_file()).unwrap_or(false)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|e| vec![format!("Error reading directory: {}", e)]);
+
             anyhow::bail!(
-                "Executable was not created at {}",
-                executable_path.display()
+                "Executable was not created at {}\nExpected name: {}\nOutput directory: {}\nOutput directory contents: {:?}",
+                executable_path.display(),
+                executable_name,
+                output_dir.display(),
+                dir_contents
             );
         }
 
@@ -590,39 +628,40 @@ impl BundlerTestHelper {
         args: &[&str],
         env_vars: &[(&str, &str)],
     ) -> Result<std::process::Output> {
-        // Windows-specific debugging for "program not found" errors
-        #[cfg(windows)]
-        {
-            if !executable_path.exists() {
-                anyhow::bail!(
-                    "Windows: Executable does not exist at path: {}\nParent directory exists: {}\nParent directory contents: {:?}",
-                    executable_path.display(),
-                    executable_path.parent().map(|p| p.exists()).unwrap_or(false),
-                    executable_path.parent()
-                        .and_then(|p| fs::read_dir(p).ok())
-                        .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())
-                        .unwrap_or_else(|| vec!["Could not read directory".to_string()])
-                );
-            }
+        // Verify executable exists and is accessible
+        if !executable_path.exists() {
+            let parent_contents = executable_path
+                .parent()
+                .and_then(|p| fs::read_dir(p).ok())
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["Could not read directory".to_string()]);
 
-            if let Ok(metadata) = fs::metadata(executable_path) {
-                if !metadata.is_file() {
-                    anyhow::bail!(
-                        "Windows: Path exists but is not a file: {} (is_dir: {})",
-                        executable_path.display(),
-                        metadata.is_dir()
-                    );
-                }
-                println!(
-                    "Windows debug: Executable found, size: {} bytes",
-                    metadata.len()
-                );
-            } else {
+            anyhow::bail!(
+                "Executable does not exist at path: {}\nParent directory exists: {}\nParent directory contents: {:?}",
+                executable_path.display(),
+                executable_path.parent().map(|p| p.exists()).unwrap_or(false),
+                parent_contents
+            );
+        }
+
+        if let Ok(metadata) = fs::metadata(executable_path) {
+            if !metadata.is_file() {
                 anyhow::bail!(
-                    "Windows: Cannot read metadata for executable: {}",
-                    executable_path.display()
+                    "Path exists but is not a file: {} (is_dir: {})",
+                    executable_path.display(),
+                    metadata.is_dir()
                 );
             }
+        } else {
+            anyhow::bail!(
+                "Cannot read metadata for executable: {}",
+                executable_path.display()
+            );
         }
 
         // Make executable on Unix
@@ -635,12 +674,32 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        let mut cmd = Command::new(executable_path);
+        // On Windows, ensure we're using the full path and handle potential issues
+        let mut cmd = if cfg!(windows) {
+            // Use the full canonical path on Windows to avoid "program not found" issues
+            let canonical_path = executable_path.canonicalize().with_context(|| {
+                format!("Failed to canonicalize path: {}", executable_path.display())
+            })?;
+            println!(
+                "Windows: Using canonical path: {}",
+                canonical_path.display()
+            );
+            Command::new(canonical_path)
+        } else {
+            Command::new(executable_path)
+        };
+
         cmd.args(args);
 
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
+
+        println!(
+            "Executing: {} with args: {:?}",
+            executable_path.display(),
+            args
+        );
 
         let output = cmd.output().with_context(|| {
             format!(
@@ -674,14 +733,11 @@ impl BundlerTestHelper {
             Ok(result) => result.map_err(|e| anyhow::anyhow!("Command execution failed: {}", e)),
             Err(_) => {
                 // Timeout occurred, kill the process
-                #[cfg(unix)]
-                {
+                if cfg!(unix) {
                     let _ = std::process::Command::new("kill")
                         .args(["-9", &child_id.to_string()])
                         .output();
-                }
-                #[cfg(windows)]
-                {
+                } else if cfg!(windows) {
                     let _ = std::process::Command::new("taskkill")
                         .args(["/F", "/PID", &child_id.to_string()])
                         .output();
