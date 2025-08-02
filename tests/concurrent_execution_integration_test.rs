@@ -103,17 +103,17 @@ async fn test_concurrent_first_launch() -> Result<()> {
                         i,
                         executable_path.as_ref().display()
                     );
-                    eprintln!("Windows debug - Thread {}: Error details: {:?}", i, e);
-                    eprintln!("Windows debug - Thread {}: Error chain:", i);
+                    eprintln!("Windows debug - Thread {i}: Error details: {e:?}");
+                    eprintln!("Windows debug - Thread {i}: Error chain:");
                     let mut source = e.source();
                     let mut level = 0;
                     while let Some(err) = source {
-                        eprintln!("Windows debug - Thread {}: Level {}: {}", i, level, err);
+                        eprintln!("Windows debug - Thread {i}: Level {level}: {err}");
                         source = err.source();
                         level += 1;
                     }
                 }
-                anyhow::anyhow!("Failed to execute binary: {}", e)
+                anyhow::anyhow!("Failed to execute binary: {e}")
             })?;
 
             let duration = thread_start.elapsed();
@@ -307,18 +307,12 @@ async fn test_cached_concurrent_execution() -> Result<()> {
                         i,
                         executable_path.as_ref().display()
                     );
-                    eprintln!(
-                        "Windows debug - Cached thread {}: Error details: {:?}",
-                        i, e
-                    );
-                    eprintln!("Windows debug - Cached thread {}: Error chain:", i);
+                    eprintln!("Windows debug - Cached thread {e}: Error details: {e:?}");
+                    eprintln!("Windows debug - Cached thread {i}: Error chain:");
                     let mut source = e.source();
                     let mut level = 0;
                     while let Some(err) = source {
-                        eprintln!(
-                            "Windows debug - Cached thread {}: Level {}: {}",
-                            i, level, err
-                        );
+                        eprintln!("Windows debug - Cached thread {i}: Level {level}: {err}");
                         source = err.source();
                         level += 1;
                     }
@@ -346,7 +340,7 @@ async fn test_cached_concurrent_execution() -> Result<()> {
     for handle in handles {
         let result = handle
             .join()
-            .map_err(|e| anyhow::anyhow!("Thread panicked: {:?}", e))??;
+            .map_err(|e| anyhow::anyhow!("Thread panicked: {e:?}"))??;
         results.push(result);
     }
 
