@@ -3,8 +3,6 @@ mod common;
 use anyhow::Result;
 use common::{BundlerTestHelper, TestCacheManager, TestProject, TestProjectManager};
 use serial_test::serial;
-#[cfg(windows)]
-use std::error::Error;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 use std::thread;
