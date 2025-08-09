@@ -768,7 +768,6 @@ impl BundlerTestHelper {
         let output = match direct {
             Ok(o) => Ok(o),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut cmd = Command::new("cmd");
                 let mut all_args: Vec<String> = Vec::with_capacity(1 + 1 + args.len());
                 all_args.push("/C".to_string());
                 all_args.push(exec_to_run.display().to_string());
