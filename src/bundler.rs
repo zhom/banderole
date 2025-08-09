@@ -1329,6 +1329,14 @@ fn resolve_output_path(
     let base_name = custom_name.unwrap_or(app_name);
     let mut output_path = PathBuf::from(format!("{base_name}{ext}"));
 
+    // On Windows, also consider collision with a directory named without extension
+    if Platform::current().is_windows() {
+        let dir_collision = PathBuf::from(base_name);
+        if dir_collision.exists() && dir_collision.is_dir() {
+            output_path = PathBuf::from(format!("{base_name}-bundle{ext}"));
+        }
+    }
+
     let mut counter = 1;
     while output_path.exists() {
         if output_path.is_dir() {

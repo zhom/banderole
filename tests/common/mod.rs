@@ -751,17 +751,42 @@ impl BundlerTestHelper {
             executable_path.parent().unwrap().to_path_buf(),
         );
 
-        let mut cmd = Command::new(&exec_to_run);
-
-        cmd.args(args);
-
-        for (key, value) in env_vars {
-            cmd.env(key, value);
-        }
-
         println!("Executing: {} with args: {:?}", exec_to_run.display(), args);
 
-        let output = cmd.current_dir(&work_dir).output().with_context(|| {
+        // First try direct spawn
+        let direct = {
+            let mut cmd = Command::new(&exec_to_run);
+            cmd.args(args);
+            for (key, value) in env_vars {
+                cmd.env(key, value);
+            }
+            cmd.current_dir(&work_dir).output()
+        };
+
+        // If NotFound on Windows, retry via cmd /C
+        #[cfg(windows)]
+        let output = match direct {
+            Ok(o) => Ok(o),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut cmd = Command::new("cmd");
+                let mut all_args: Vec<String> = Vec::with_capacity(1 + 1 + args.len());
+                all_args.push("/C".to_string());
+                all_args.push(exec_to_run.display().to_string());
+                all_args.extend(args.iter().map(|a| a.to_string()));
+                let mut c2 = Command::new("cmd");
+                c2.args(&all_args).current_dir(&work_dir);
+                for (key, value) in env_vars {
+                    c2.env(key, value);
+                }
+                c2.output()
+            }
+            Err(e) => Err(e),
+        };
+
+        #[cfg(not(windows))]
+        let output = direct;
+
+        let output = output.with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
                 exec_to_run.display(),
