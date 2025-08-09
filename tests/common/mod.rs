@@ -674,20 +674,8 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // On Windows, ensure we're using the full path and handle potential issues
-        let mut cmd = if cfg!(windows) {
-            // Use the full canonical path on Windows to avoid "program not found" issues
-            let canonical_path = executable_path.canonicalize().with_context(|| {
-                format!("Failed to canonicalize path: {}", executable_path.display())
-            })?;
-            println!(
-                "Windows: Using canonical path: {}",
-                canonical_path.display()
-            );
-            Command::new(canonical_path)
-        } else {
-            Command::new(executable_path)
-        };
+        // Build command to run the executable.
+        let mut cmd = Command::new(executable_path);
 
         cmd.args(args);
 

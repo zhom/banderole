@@ -1201,9 +1201,6 @@ async fn test_bundle_simple_project() {
     // Test that the bundle exists
     let bundle_path = temp_dir.path().join("test-bundle");
     assert!(bundle_path.exists(), "Bundle file not created");
-
-    // Note: Testing execution would require extracting and running the bundle,
-    // which is complex in a test environment
 }
 
 #[tokio::test(flavor = "multi_thread")]
