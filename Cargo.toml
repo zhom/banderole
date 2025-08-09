@@ -48,6 +48,14 @@ name = "workspace_integration_test"
 harness = true
 
 [[test]]
+name = "local_link_integration_test"
+harness = true
+
+[[test]]
+name = "workspace_version_integration_test"
+harness = true
+
+[[test]]
 name = "concurrent_execution_integration_test"
 harness = true
 
