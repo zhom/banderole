@@ -103,20 +103,20 @@ pub async fn bundle_project(
     let node_executable = node_downloader
         .ensure_node_binary_with_progress(Some(&pb_prepare))
         .await?;
-    let node_root_buf = if Platform::current().is_windows() {
-        // On Windows, node.exe lives directly under the platform directory
-        node_executable
+    let node_root_buf = {
+        // The extraction target_dir is what we passed to NodeDownloader::download_and_extract_node
+        // which is cache_dir/node/<version>/<platform> on all platforms. We want to bundle that
+        // entire directory under "node/" so the runtime can find binaries consistently.
+        // Derive the root by walking up from the executable until we find the directory named
+        // the platform triplet (win32-*, darwin-*, linux-*).
+        let mut cur = node_executable
             .parent()
-            .expect("node executable must have a parent")
-            .to_path_buf()
-    } else {
-        // On Unix, node is under <platform>/bin/node
-        node_executable
-            .parent()
-            .expect("node executable must have a parent")
-            .parent()
-            .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()))
-            .to_path_buf()
+            .expect("node executable must have a parent");
+        // If on Unix and we are at .../<platform>/bin, step up to <platform>
+        if cur.file_name().is_some_and(|n| n == "bin") {
+            cur = cur.parent().unwrap_or(cur);
+        }
+        cur.to_path_buf()
     };
     let node_root: &Path = &node_root_buf;
     pb_prepare.finish_and_clear();

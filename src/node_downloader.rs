@@ -94,7 +94,7 @@ impl NodeDownloader {
             .join(&self.node_version)
             .join(self.platform.to_string());
 
-        let node_executable = node_dir.join(self.platform.node_executable_path());
+        let mut node_executable = node_dir.join(self.platform.node_executable_path());
 
         if node_executable.exists() {
             // Update in-memory cache
@@ -118,11 +118,55 @@ impl NodeDownloader {
         // Download and extract Node.js
         self.download_and_extract_node(&node_dir, progress).await?;
 
+        // Validate presence; if not in expected location, search recursively as a fallback
         if !node_executable.exists() {
-            anyhow::bail!(
-                "Node executable not found after extraction: {}",
-                node_executable.display()
-            );
+            // Platform-specific name to search for
+            let expected_name = self.platform.node_executable_path();
+            let expected_name_str = expected_name
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("node.exe");
+            let mut found_path: Option<PathBuf> = None;
+            if std::fs::read_dir(&node_dir).is_ok() {
+                for e in walkdir::WalkDir::new(&node_dir)
+                    .follow_links(true)
+                    .into_iter()
+                    .flatten()
+                {
+                    let p = e.path();
+                    if p.is_file() {
+                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                            // On Windows search for node.exe case-insensitively, else match exact
+                            if (self.platform.is_windows()
+                                && name.eq_ignore_ascii_case(expected_name_str))
+                                || (!self.platform.is_windows() && name == expected_name_str)
+                            {
+                                found_path = Some(p.to_path_buf());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(found) = found_path {
+                node_executable = found;
+            } else {
+                // Provide additional diagnostics
+                let dir_list: Vec<String> = std::fs::read_dir(&node_dir)
+                    .map(|it| {
+                        it.filter_map(|e| e.ok())
+                            .map(|entry| entry.file_name().to_string_lossy().to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "Node executable not found after extraction: {}\nDirectory: {}\nEntries: {:?}",
+                    node_executable.display(),
+                    node_dir.display(),
+                    dir_list
+                );
+            }
         }
 
         // Make executable on Unix systems
