@@ -76,11 +76,10 @@ pub async fn bundle_project(
         ProgressStyle::with_template("{prefix:.bold.dim} {spinner:.green} {wide_msg}")
             .unwrap()
             .tick_chars("/|\\- ");
-    let bar_style = ProgressStyle::with_template(
-        "{prefix:.bold.dim} {msg}[ {wide_bar} ] {pos}/{len}",
-    )
-    .unwrap()
-    .progress_chars("#>-");
+    let bar_style =
+        ProgressStyle::with_template("{prefix:.bold.dim} {msg}[ {wide_bar} ] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-");
 
     let emoji_prepare = Emoji("🔧", "");
     let emoji_bundle = Emoji("📦", "");

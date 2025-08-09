@@ -26,10 +26,9 @@ fn write_app_with_dep(app_dir: &Path, dep_spec: &str) {
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {{
-    "test_local_dep": "{}"
+    "test_local_dep": "{dep_spec}"
   }}
-}}"#,
-        dep_spec
+}}"#
     );
     let index_js = r#"const test_local_dep = require('test_local_dep');
 console.log('Hello from app');
@@ -40,7 +39,9 @@ process.exit(0);"#;
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if dst.exists() { let _ = fs::remove_dir_all(dst); }
+    if dst.exists() {
+        let _ = fs::remove_dir_all(dst);
+    }
     fs::create_dir_all(dst)?;
     for entry in walkdir::WalkDir::new(src) {
         let entry = entry.unwrap();
@@ -50,7 +51,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         if entry.file_type().is_dir() {
             fs::create_dir_all(&target)?;
         } else if entry.file_type().is_file() {
-            if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
             fs::copy(path, &target)?;
         }
     }
@@ -60,16 +63,26 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     use std::os::unix::fs as unix_fs;
-    if link.exists() { let _ = fs::remove_file(link); let _ = fs::remove_dir_all(link); }
-    if let Some(parent) = link.parent() { fs::create_dir_all(parent)?; }
+    if link.exists() {
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(link);
+    }
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent)?;
+    }
     unix_fs::symlink(target, link)
 }
 
 #[cfg(windows)]
 fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     // Best-effort: try directory junction; fall back to copy if it fails
-    if link.exists() { let _ = fs::remove_file(link); let _ = fs::remove_dir_all(link); }
-    if let Some(parent) = link.parent() { fs::create_dir_all(parent)?; }
+    if link.exists() {
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(link);
+    }
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent)?;
+    }
     std::os::windows::fs::symlink_dir(target, link).or_else(|_| copy_dir_recursive(target, link))
 }
 
@@ -100,28 +113,52 @@ fn bundle_app(app_dir: &Path, out_dir: &Path, name: &str) -> PathBuf {
         };
         if !path.exists() {
             let out = Command::new("cargo").args(["build"]).output().unwrap();
-            assert!(out.status.success(), "Failed to build banderole: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "Failed to build banderole: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         path
     };
 
     let output = Command::new(&bundler)
-        .args(["bundle", app_dir.to_str().unwrap(), "--no-compression", "--name", name])
+        .args([
+            "bundle",
+            app_dir.to_str().unwrap(),
+            "--no-compression",
+            "--name",
+            name,
+        ])
         .current_dir(out_dir)
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "Bundle failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Bundle failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-    let exe = out_dir.join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
-    if exe.exists() && exe.is_file() { exe } else { out_dir.join(if cfg!(windows) { format!("{}-bundle.exe", name) } else { format!("{}-bundle", name) }) }
+    let exe = out_dir.join(if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    });
+    if exe.exists() && exe.is_file() {
+        exe
+    } else {
+        out_dir.join(if cfg!(windows) {
+            format!("{name}-bundle.exe")
+        } else {
+            format!("{name}-bundle")
+        })
+    }
 }
 
 fn copy_exe_to_fresh_dir(exe: &Path) -> PathBuf {
     let run_dir = TempDir::new().unwrap();
-    let dst = run_dir
-        .path()
-        .join(exe.file_name().unwrap_or_default());
+    let dst = run_dir.path().join(exe.file_name().unwrap_or_default());
     fs::copy(exe, &dst).unwrap();
     // Keep dir alive by leaking TempDir, test process will clean temp space later
     Box::leak(Box::new(run_dir));
@@ -138,7 +175,11 @@ fn run_and_assert(exe: &Path) {
     }
     let out = Command::new(exe).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "Executable failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "Executable failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(stdout.contains("Hello from app"));
     assert!(stdout.contains("test_local_dep: test_local_dep says hi"));
 }

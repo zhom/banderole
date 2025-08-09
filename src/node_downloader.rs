@@ -205,11 +205,9 @@ impl NodeDownloader {
         // Extract the archive with determinate progress
         if let Some(pb) = progress {
             pb.set_style(
-                ProgressStyle::with_template(
-                    "[ {wide_bar} ] {pos}/{len}",
-                )
-                .unwrap()
-                .progress_chars("#>-"),
+                ProgressStyle::with_template("[ {wide_bar} ] {pos}/{len}")
+                    .unwrap()
+                    .progress_chars("#>-"),
             );
             pb.set_length(0);
             pb.set_position(0);

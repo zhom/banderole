@@ -135,11 +135,9 @@ fn build_executable_with_progress(
     if let Some(pb) = progress {
         if known_total > 0 {
             pb.set_style(
-                ProgressStyle::with_template(
-                    "[ {wide_bar} ] {pos}/{len}",
-                )
-                .unwrap()
-                .progress_chars("#>-"),
+                ProgressStyle::with_template("[ {wide_bar} ] {pos}/{len}")
+                    .unwrap()
+                    .progress_chars("#>-"),
             );
             pb.set_length(known_total);
             pb.set_position(0);
