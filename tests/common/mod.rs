@@ -697,27 +697,8 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // Build command to run the executable.
-        let exec_path_owned = executable_path.to_path_buf();
-        // Use verbatim long-path prefix on Windows to avoid MAX_PATH issues,
-        // otherwise use the original path.
-        #[cfg(windows)]
-        let exec_cmd = {
-            use std::ffi::OsString;
-            let abs = exec_path_owned
-                .canonicalize()
-                .unwrap_or_else(|_| exec_path_owned.clone());
-            let mut s: OsString = OsString::from(r"\\?\");
-            s.push(&abs);
-            s
-        };
-        #[cfg(not(windows))]
-        let exec_cmd = exec_path_owned.as_os_str().to_os_string();
-
-        let mut cmd = Command::new(&exec_cmd);
-        if let Some(parent) = exec_path_owned.parent() {
-            cmd.current_dir(parent);
-        }
+        // Build command to run the executable (match queue_ordering test behavior)
+        let mut cmd = Command::new(executable_path);
 
         cmd.args(args);
 
@@ -727,14 +708,14 @@ impl BundlerTestHelper {
 
         println!(
             "Executing: {} with args: {:?}",
-            exec_path_owned.display(),
+            executable_path.display(),
             args
         );
 
         let output = cmd.output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
-                exec_path_owned.display(),
+                executable_path.display(),
                 args,
                 env_vars,
                 std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())

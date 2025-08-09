@@ -337,28 +337,13 @@ fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
     let max_attempts: u32 = 8;
     let mut status: Option<std::process::ExitStatus> = None;
     for attempt in 1..=max_attempts {
-        // Prepend Node's directory to PATH and launch via program name to avoid path parsing quirks
-        let node_bin_dir = node_executable
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid node executable path: {}", node_executable.display()))?
-            .to_path_buf();
-        let program_name = if cfg!(windows) { "node.exe" } else { "node" };
-        let mut cmd = Command::new(program_name);
-        // Ensure PATH includes the Node directory first
-        let mut new_path = std::env::var_os("PATH").unwrap_or_default();
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let mut prefixed: OsString = OsString::new();
-        prefixed.push(node_bin_dir.as_os_str());
-        prefixed.push(sep);
-        prefixed.push(&new_path);
-        cmd.env("PATH", prefixed);
-        match cmd
+        let status_res = Command::new(&node_executable)
             .args(&cmd_args)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .status()
-        {
+            .status();
+        match status_res {
             Ok(s) => {
                 status = Some(s);
                 break;
