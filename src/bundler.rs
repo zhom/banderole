@@ -1313,7 +1313,11 @@ fn resolve_output_path(
     app_name: &str,
     custom_name: Option<&str>,
 ) -> Result<PathBuf> {
-    if let Some(path) = output_path {
+    if let Some(mut path) = output_path {
+        // On Windows, ensure .exe extension if none supplied
+        if Platform::current().is_windows() && path.extension().is_none() {
+            path.set_extension("exe");
+        }
         return Ok(path);
     }
 

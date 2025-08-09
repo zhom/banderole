@@ -569,26 +569,49 @@ impl BundlerTestHelper {
             );
         }
 
-        // Find the created executable
+        // Find the created executable (normalize Windows extension rules)
         let executable_name = custom_name.unwrap_or("test-project");
-        let executable_path = output_dir.join(if cfg!(windows) {
-            format!("{executable_name}.exe")
+        let mut candidate_names: Vec<PathBuf> = Vec::new();
+        if cfg!(windows) {
+            // Prefer explicit .exe
+            candidate_names.push(output_dir.join(format!("{executable_name}.exe")));
+            // If name provided might already include .exe
+            candidate_names.push(output_dir.join(executable_name));
+            // Collision-avoidance fallback
+            candidate_names.push(output_dir.join(format!("{executable_name}-bundle.exe")));
+            candidate_names.push(output_dir.join(format!("{executable_name}-bundle")));
         } else {
-            executable_name.to_string()
-        });
-
-        // Check if collision avoidance was used
-        if !executable_path.exists() || !executable_path.is_file() {
-            let bundle_executable_path = output_dir.join(if cfg!(windows) {
-                format!("{executable_name}-bundle.exe")
-            } else {
-                format!("{executable_name}-bundle")
-            });
-
-            if bundle_executable_path.exists() {
-                return Ok(bundle_executable_path);
-            }
+            candidate_names.push(output_dir.join(executable_name));
+            candidate_names.push(output_dir.join(format!("{executable_name}-bundle")));
         }
+        let executable_path = candidate_names
+            .into_iter()
+            .find(|p| p.exists() && p.is_file())
+            .ok_or_else(|| {
+                // List directory contents for debugging
+                let dir_contents = fs::read_dir(output_dir)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .map(|entry| {
+                                let path = entry.path();
+                                let metadata = fs::metadata(&path).ok();
+                                format!(
+                                    "{} (size: {}, is_file: {})",
+                                    entry.file_name().to_string_lossy(),
+                                    metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+                                    metadata.as_ref().map(|m| m.is_file()).unwrap_or(false)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|e| vec![format!("Error reading directory: {}", e)]);
+                anyhow::anyhow!(
+                    "Executable was not created under {} with expected names. Output directory contents: {:?}",
+                    output_dir.display(),
+                    dir_contents
+                )
+            })?;
 
         if !executable_path.exists() {
             // List directory contents for debugging
