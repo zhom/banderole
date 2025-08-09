@@ -680,12 +680,12 @@ impl BundlerTestHelper {
         #[cfg(windows)]
         let (exec_path_owned, _temp_guard) = {
             let tmp = TempDir::new().context("Failed to create temp dir for executable copy")?;
-            let file_name = executable_path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!(
+            let file_name = executable_path.file_name().ok_or_else(|| {
+                anyhow::anyhow!(
                     "Executable path missing file name: {}",
                     executable_path.display()
-                ))?;
+                )
+            })?;
             let dest = tmp.path().join(file_name);
             std::fs::copy(executable_path, &dest).with_context(|| {
                 format!(

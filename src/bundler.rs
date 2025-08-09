@@ -65,6 +65,9 @@ pub async fn bundle_project(
         plat = Platform::current()
     );
 
+    // Emit a plain stdout line so tests (and users without verbose logging) can detect the exact Node.js version
+    println!("Node.js v{node_version}");
+
     if source_dir != project_path {
         debug!("Using source directory: {}", source_dir.display());
     }
