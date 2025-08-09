@@ -675,7 +675,31 @@ impl BundlerTestHelper {
         }
 
         // Build command to run the executable.
-        let mut cmd = Command::new(executable_path);
+        // On Windows CI, concurrent CreateProcess on the same path may fail sporadically.
+        // Copy the binary to a unique temp dir to shorten the path and avoid races.
+        #[cfg(windows)]
+        let (exec_path_owned, _temp_guard) = {
+            let tmp = TempDir::new().context("Failed to create temp dir for executable copy")?;
+            let file_name = executable_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "Executable path missing file name: {}",
+                    executable_path.display()
+                ))?;
+            let dest = tmp.path().join(file_name);
+            std::fs::copy(executable_path, &dest).with_context(|| {
+                format!(
+                    "Failed to copy executable to temporary directory: {} -> {}",
+                    executable_path.display(),
+                    dest.display()
+                )
+            })?;
+            (dest, tmp)
+        };
+        #[cfg(not(windows))]
+        let exec_path_owned = executable_path.to_path_buf();
+
+        let mut cmd = Command::new(&exec_path_owned);
 
         cmd.args(args);
 
@@ -685,14 +709,14 @@ impl BundlerTestHelper {
 
         println!(
             "Executing: {} with args: {:?}",
-            executable_path.display(),
+            exec_path_owned.display(),
             args
         );
 
         let output = cmd.output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
-                executable_path.display(),
+                exec_path_owned.display(),
                 args,
                 env_vars,
                 std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())

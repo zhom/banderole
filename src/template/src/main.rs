@@ -292,20 +292,48 @@ fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
     let mut cmd_args = vec![main_script.clone()];
     cmd_args.extend(args.iter().cloned());
     
-    // Execute Node.js application
-    let status = Command::new(&node_executable)
-        .args(&cmd_args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!(
-            "Failed to execute Node.js application\nExecutable: {}\nMain script: {}\nArgs: {:?}\nWorking directory: {}", 
-            node_executable.display(), 
-            main_script,
-            cmd_args,
-            app_path.display()
-        ))?;
+    // Execute Node.js application with a few retries to tolerate transient Windows issues
+    let mut status = None;
+    let mut last_err: Option<anyhow::Error> = None;
+    let max_attempts: u32 = 8;
+    for attempt in 1..=max_attempts {
+        match Command::new(&node_executable)
+            .args(&cmd_args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+        {
+            Ok(s) => {
+                status = Some(s);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!(e).context(format!(
+                    "Failed to execute Node.js application (attempt {attempt}/{max_attempts})\nExecutable: {}\nMain script: {}\nArgs: {:?}\nWorking directory: {}",
+                    node_executable.display(),
+                    main_script,
+                    cmd_args,
+                    app_path.display()
+                )));
+                #[cfg(windows)]
+                {
+                    use std::time::Duration;
+                    std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+                }
+                #[cfg(not(windows))]
+                {
+                    if attempt >= 2 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let status = status.ok_or_else(|| last_err.unwrap_or_else(|| anyhow::anyhow!(
+        "Failed to execute Node.js application after {} attempts",
+        max_attempts
+    )))?;
     
     std::process::exit(status.code().unwrap_or(1));
 }
