@@ -674,11 +674,10 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // Build command to run the executable.
-        // On Windows CI, concurrent CreateProcess on the same path may fail sporadically.
-        // Copy the binary to a unique temp dir to shorten the path and avoid races.
+        // Build command to run the executable. On Windows, copy to a temp dir to avoid
+        // path locking/races under concurrent CreateProcess, then run from there.
         #[cfg(windows)]
-        let (exec_path_owned, _temp_guard) = {
+        let (exec_path_owned, _tmp_guard) = {
             let tmp = TempDir::new().context("Failed to create temp dir for executable copy")?;
             let file_name = executable_path.file_name().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -700,6 +699,9 @@ impl BundlerTestHelper {
         let exec_path_owned = executable_path.to_path_buf();
 
         let mut cmd = Command::new(&exec_path_owned);
+        if let Some(parent) = exec_path_owned.parent() {
+            cmd.current_dir(parent);
+        }
 
         cmd.args(args);
 
@@ -713,6 +715,34 @@ impl BundlerTestHelper {
             args
         );
 
+        // Retry launching on Windows to avoid transient CreateProcess races
+        #[cfg(windows)]
+        let output = {
+            use std::thread::sleep;
+            use std::time::Duration;
+            let mut attempt = 1u32;
+            let max_attempts = 8u32;
+            loop {
+                match cmd.output() {
+                    Ok(o) => break Ok(o),
+                    Err(e) => {
+                        if attempt >= max_attempts {
+                            break Err(anyhow::anyhow!(e).context(format!(
+                                "Failed to execute command after {max_attempts} attempts: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
+                                exec_path_owned.display(),
+                                args,
+                                env_vars,
+                                std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())
+                            )));
+                        }
+                        sleep(Duration::from_millis(50 * attempt as u64));
+                        attempt += 1;
+                    }
+                }
+            }?
+        };
+
+        #[cfg(not(windows))]
         let output = cmd.output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",

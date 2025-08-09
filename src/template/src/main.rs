@@ -94,6 +94,10 @@ fn get_node_executable_path(app_dir: &Path) -> PathBuf {
 fn is_extraction_valid(app_dir: &Path) -> Result<bool> {
     let app_package_json = app_dir.join("app").join("package.json");
     let node_executable = get_node_executable_path(app_dir);
+    #[cfg(windows)]
+    let node_executable = node_executable
+        .canonicalize()
+        .unwrap_or_else(|_| node_executable.clone());
     
     let package_exists = app_package_json.exists();
     let node_exists = node_executable.exists();
