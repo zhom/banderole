@@ -697,8 +697,52 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // Build command to run the executable (match queue_ordering test behavior)
-        let mut cmd = Command::new(executable_path);
+        // Build command to run the executable.
+        #[cfg(windows)]
+        let (exec_to_run, work_dir) = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let temp_dir = std::env::temp_dir();
+            let mut base = executable_path
+                .file_name()
+                .map(|s| s.to_os_string())
+                .unwrap_or_else(|| "app.exe".into());
+            // Ensure .exe extension is present
+            if Path::new(&base).extension().is_none() {
+                base.push(".exe");
+            }
+            let mut candidate = temp_dir.join(&base);
+            if candidate.exists() {
+                let stamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                let stem = Path::new(&base)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("app");
+                let ext = Path::new(&base)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("exe");
+                candidate = temp_dir.join(format!("{stem}-{stamp}.{ext}"));
+            }
+            std::fs::copy(executable_path, &candidate).with_context(|| {
+                format!(
+                    "Failed to copy executable to temp: {} -> {}",
+                    executable_path.display(),
+                    candidate.display()
+                )
+            })?;
+            (candidate, temp_dir)
+        };
+
+        #[cfg(not(windows))]
+        let (exec_to_run, work_dir) = (
+            executable_path.to_path_buf(),
+            executable_path.parent().unwrap().to_path_buf(),
+        );
+
+        let mut cmd = Command::new(&exec_to_run);
 
         cmd.args(args);
 
@@ -706,19 +750,15 @@ impl BundlerTestHelper {
             cmd.env(key, value);
         }
 
-        println!(
-            "Executing: {} with args: {:?}",
-            executable_path.display(),
-            args
-        );
+        println!("Executing: {} with args: {:?}", exec_to_run.display(), args);
 
-        let output = cmd.output().with_context(|| {
+        let output = cmd.current_dir(&work_dir).output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
-                executable_path.display(),
+                exec_to_run.display(),
                 args,
                 env_vars,
-                std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())
+                &work_dir
             )
         })?;
         Ok(output)
