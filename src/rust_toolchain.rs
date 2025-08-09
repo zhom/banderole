@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::{debug, info};
 use std::process::Command;
 
 /// Manages Rust toolchain requirements and installation
@@ -13,7 +14,7 @@ impl RustToolchain {
         match rustc_output {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("Found Rust compiler: {}", version.trim());
+                debug!("Found Rust compiler: {}", version.trim());
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -28,7 +29,7 @@ impl RustToolchain {
         match cargo_output {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("Found Cargo: {}", version.trim());
+                debug!("Found Cargo: {}", version.trim());
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -43,7 +44,7 @@ impl RustToolchain {
         match rustup_output {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("Found rustup: {}", version.trim());
+                debug!("Found rustup: {}", version.trim());
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -66,7 +67,7 @@ impl RustToolchain {
         let installed_targets = String::from_utf8_lossy(&output.stdout);
 
         if !installed_targets.contains(target) {
-            println!("Installing Rust target: {target}");
+            info!("Installing Rust target: {target}");
             let install_output = Command::new("rustup")
                 .args(["target", "add", target])
                 .output()
@@ -76,9 +77,9 @@ impl RustToolchain {
                 let stderr = String::from_utf8_lossy(&install_output.stderr);
                 anyhow::bail!("Failed to install target {}:\n{}", target, stderr);
             }
-            println!("Successfully installed target: {target}");
+            info!("Successfully installed target: {target}");
         } else {
-            println!("Target {target} is already installed");
+            debug!("Target {target} is already installed");
         }
 
         Ok(())

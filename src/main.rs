@@ -7,6 +7,9 @@ mod platform;
 mod rust_toolchain;
 
 use clap::{Parser, Subcommand};
+use indicatif::MultiProgress;
+use indicatif_log_bridge::LogWrapper;
+use log::LevelFilter;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -17,6 +20,9 @@ use std::path::PathBuf;
     long_about = "Banderole packages Node.js applications with portable Node binaries into a single binary for easy distribution and execution"
 )]
 struct Cli {
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -44,7 +50,17 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize env_logger wrapped by indicatif's log bridge so logs play nice with progress bars
+    let multi_progress = MultiProgress::new();
     let cli = Cli::parse();
+
+    let default_level = if cli.verbose { "debug" } else { "warn" };
+    let built_logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
+            .build();
+    let level: LevelFilter = built_logger.filter();
+    LogWrapper::new(multi_progress.clone(), built_logger).try_init()?;
+    log::set_max_level(level);
 
     match cli.command {
         Commands::Bundle {
@@ -54,8 +70,15 @@ async fn main() -> anyhow::Result<()> {
             no_compression,
             ignore_cached_versions,
         } => {
-            bundler::bundle_project(path, output, name, no_compression, ignore_cached_versions)
-                .await?;
+            bundler::bundle_project(
+                path,
+                output,
+                name,
+                no_compression,
+                ignore_cached_versions,
+                &multi_progress,
+            )
+            .await?;
         }
     }
 
