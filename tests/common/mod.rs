@@ -708,34 +708,6 @@ impl BundlerTestHelper {
             args
         );
 
-        // Retry launching on Windows to avoid transient CreateProcess races
-        #[cfg(windows)]
-        let output = {
-            use std::thread::sleep;
-            use std::time::Duration;
-            let mut attempt = 1u32;
-            let max_attempts = 8u32;
-            loop {
-                match cmd.output() {
-                    Ok(o) => break Ok(o),
-                    Err(e) => {
-                        if attempt >= max_attempts {
-                            break Err(anyhow::anyhow!(e).context(format!(
-                                "Failed to execute command after {max_attempts} attempts: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
-                                exec_path_owned.display(),
-                                args,
-                                env_vars,
-                                std::env::current_dir().unwrap_or_else(|_| "<unknown>".into())
-                            )));
-                        }
-                        sleep(Duration::from_millis(50 * attempt as u64));
-                        attempt += 1;
-                    }
-                }
-            }?
-        };
-
-        #[cfg(not(windows))]
         let output = cmd.output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
