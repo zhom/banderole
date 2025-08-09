@@ -15,6 +15,7 @@
         "mktemp",
         "msrv",
         "msvc",
+        "nocapture",
         "nvmrc",
         "outpath",
         "readlink",
