@@ -733,6 +733,15 @@ impl BundlerTestHelper {
                     candidate.display()
                 )
             })?;
+            // Give Windows a brief moment to finalize the new executable on disk
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Verify existence
+            if !candidate.exists() {
+                anyhow::bail!(
+                    "Temp executable not found after copy: {}",
+                    candidate.display()
+                );
+            }
             (candidate, temp_dir)
         };
 
