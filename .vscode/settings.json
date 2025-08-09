@@ -2,6 +2,7 @@
     "cSpell.words": [
         "chrono",
         "Clippy",
+        "codegen",
         "dtolnay",
         "enabledelayedexpansion",
         "ERRORLEVEL",
@@ -10,6 +11,7 @@
         "indicatif",
         "LOCALAPPDATA",
         "lockfiles",
+        "lzma",
         "mktemp",
         "msrv",
         "msvc",
@@ -21,6 +23,7 @@
         "rustc",
         "serde",
         "setlocal",
+        "sevenz",
         "sindresorhus",
         "Swatinem",
         "taskkill",

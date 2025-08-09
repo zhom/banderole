@@ -103,11 +103,22 @@ pub async fn bundle_project(
     let node_executable = node_downloader
         .ensure_node_binary_with_progress(Some(&pb_prepare))
         .await?;
-    let node_root = node_executable
-        .parent()
-        .expect("node executable must have a parent")
-        .parent()
-        .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()));
+    let node_root_buf = if Platform::current().is_windows() {
+        // On Windows, node.exe lives directly under the platform directory
+        node_executable
+            .parent()
+            .expect("node executable must have a parent")
+            .to_path_buf()
+    } else {
+        // On Unix, node is under <platform>/bin/node
+        node_executable
+            .parent()
+            .expect("node executable must have a parent")
+            .parent()
+            .unwrap_or_else(|| panic!("Unexpected node layout for {}", node_executable.display()))
+            .to_path_buf()
+    };
+    let node_root: &Path = &node_root_buf;
     pb_prepare.finish_and_clear();
 
     // Stage 2: Bundle application into archive

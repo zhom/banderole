@@ -213,10 +213,9 @@ impl NodeDownloader {
             pb.set_position(0);
         }
         if self.platform.is_windows() {
-            self.extract_zip(&archive_path, target_dir, progress)
-                .await?;
+            self.extract_7z(&archive_path, target_dir, progress).await?;
         } else {
-            self.extract_tar_gz(&archive_path, target_dir, progress)
+            self.extract_tar_xz(&archive_path, target_dir, progress)
                 .await?;
         }
 
@@ -239,7 +238,7 @@ impl NodeDownloader {
         Ok(())
     }
 
-    async fn extract_zip(
+    async fn extract_7z(
         &self,
         archive_path: &Path,
         target_dir: &Path,
@@ -249,56 +248,59 @@ impl NodeDownloader {
         let target_dir = target_dir.to_path_buf();
         let progress = progress.cloned();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let file = std::fs::File::open(&archive_path).context("Failed to open zip archive")?;
-            let mut archive = zip::ZipArchive::new(file).context("Failed to read zip archive")?;
-
             if let Some(pb) = &progress {
-                pb.set_length(archive.len() as u64);
-                pb.set_position(0);
+                pb.set_message("Extracting 7z archive");
             }
+            sevenz_rust::decompress_file(&archive_path, &target_dir)
+                .context("Failed to extract 7z archive")?;
 
-            for i in 0..archive.len() {
-                let mut file = archive.by_index(i).context("Failed to read zip entry")?;
-
-                let outpath = match file.enclosed_name() {
-                    Some(path) => {
-                        let components: Vec<_> = path.components().collect();
-                        if components.len() > 1 {
-                            target_dir.join(components[1..].iter().collect::<PathBuf>())
-                        } else {
-                            if let Some(pb) = &progress {
-                                pb.inc(1);
+            // Post-process: many Node archives have a single top-level folder. Flatten it.
+            let entries = std::fs::read_dir(&target_dir)
+                .context("Failed to read extraction directory")?
+                .filter_map(|e| e.ok())
+                .collect::<Vec<_>>();
+            let top_dirs: Vec<_> = entries
+                .iter()
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .collect();
+            let top_files_exist = entries
+                .iter()
+                .any(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false));
+            if top_dirs.len() == 1 && !top_files_exist {
+                let inner = top_dirs[0].path();
+                for inner_entry in std::fs::read_dir(&inner)? {
+                    let inner_entry = inner_entry?;
+                    let from = inner_entry.path();
+                    let to = target_dir.join(inner_entry.file_name());
+                    std::fs::rename(&from, &to)
+                        .or_else(|_| {
+                            if inner_entry.file_type()?.is_dir() {
+                                std::fs::create_dir_all(&to)?;
+                                for sub in walkdir::WalkDir::new(&from).into_iter().flatten() {
+                                    let p = sub.path();
+                                    let rel = p.strip_prefix(&from).unwrap();
+                                    let dest = to.join(rel);
+                                    if sub.file_type().is_dir() {
+                                        std::fs::create_dir_all(&dest)?;
+                                    } else if sub.file_type().is_file() {
+                                        if let Some(parent) = dest.parent() {
+                                            std::fs::create_dir_all(parent)?;
+                                        }
+                                        std::fs::copy(p, &dest).map(|_| ())?;
+                                    }
+                                }
+                                Ok(())
+                            } else {
+                                std::fs::copy(&from, &to).map(|_| ())
                             }
-                            continue;
-                        }
-                    }
-                    None => {
-                        if let Some(pb) = &progress {
-                            pb.inc(1);
-                        }
-                        continue;
-                    }
-                };
-
-                if file.is_dir() {
-                    std::fs::create_dir_all(&outpath).context("Failed to create directory")?;
-                } else {
-                    if let Some(p) = outpath.parent() {
-                        std::fs::create_dir_all(p).context("Failed to create parent directory")?;
-                    }
-
-                    let mut outfile =
-                        std::fs::File::create(&outpath).context("Failed to create output file")?;
-
-                    std::io::copy(&mut file, &mut outfile)
-                        .context("Failed to extract zip entry")?;
+                        })
+                        .context("Failed to move extracted files")?;
                 }
-
-                if let Some(pb) = &progress {
-                    pb.inc(1);
-                }
+                let _ = std::fs::remove_dir_all(&inner);
             }
-
+            if let Some(pb) = &progress {
+                pb.finish_and_clear();
+            }
             Ok(())
         })
         .await??;
@@ -306,7 +308,7 @@ impl NodeDownloader {
         Ok(())
     }
 
-    async fn extract_tar_gz(
+    async fn extract_tar_xz(
         &self,
         archive_path: &Path,
         target_dir: &Path,
@@ -317,14 +319,28 @@ impl NodeDownloader {
         let progress = progress.cloned();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            use flate2::read::GzDecoder;
+            use std::io::Cursor;
             use tar::Archive;
 
-            // First pass: count entries
-            let file_for_count =
-                std::fs::File::open(&archive_path).context("Failed to open tar.gz for counting")?;
-            let decoder_for_count = GzDecoder::new(file_for_count);
-            let mut archive_for_count = Archive::new(decoder_for_count);
+            // Read entire .xz into memory (Node archives are moderate size) and decode
+            let mut raw = Vec::new();
+            std::fs::File::open(&archive_path)
+                .and_then(|mut f| {
+                    use std::io::Read;
+                    f.read_to_end(&mut raw)
+                })
+                .context("Failed to read .xz archive")?;
+
+            // Decompress xz -> tar bytes
+            let mut tar_bytes: Vec<u8> = Vec::new();
+            {
+                let mut reader = Cursor::new(&raw);
+                lzma_rs::xz_decompress(&mut reader, &mut tar_bytes)
+                    .context("Failed to decompress .xz archive")?;
+            }
+
+            // First pass: count tar entries
+            let mut archive_for_count = Archive::new(Cursor::new(&tar_bytes));
             let mut total_entries: u64 = 0;
             for _ in archive_for_count
                 .entries()
@@ -339,9 +355,7 @@ impl NodeDownloader {
             }
 
             // Second pass: extract
-            let file = std::fs::File::open(&archive_path).context("Failed to open tar.gz")?;
-            let decoder = GzDecoder::new(file);
-            let mut archive = Archive::new(decoder);
+            let mut archive = Archive::new(Cursor::new(&tar_bytes));
 
             for entry in archive.entries().context("Failed to iterate tar entries")? {
                 let mut entry = entry.context("Failed to read tar entry")?;

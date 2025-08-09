@@ -9,6 +9,8 @@ directories = "6"
 zip = "4"
 serde_json = "1.0"
 fs2 = "0.4"
+lzma-rs = "0.3"
+walkdir = "2.4"
 
 [build-dependencies]
 # No build dependencies needed - data is embedded at compile time

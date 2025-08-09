@@ -7,24 +7,24 @@ fn main() {
     let dest_path = Path::new(&out_dir).join("data.rs");
     
     // Check if we have embedded data files
-    let zip_data_path = Path::new("embedded_data.zip");
+    let xz_data_path = Path::new("embedded_data.xz");
     let build_id_path = Path::new("build_id.txt");
     
-    if zip_data_path.exists() && build_id_path.exists() {
+    if xz_data_path.exists() && build_id_path.exists() {
         // Read the build ID
         let build_id = fs::read_to_string(build_id_path)
             .expect("Failed to read build ID");
         
-        // Copy the zip file to the OUT_DIR so include_bytes! can find it
-        let out_zip_path = Path::new(&out_dir).join("embedded_data.zip");
-        fs::copy(zip_data_path, &out_zip_path)
+        // Copy the xz file to the OUT_DIR so include_bytes! can find it
+        let out_xz_path = Path::new(&out_dir).join("embedded_data.xz");
+        fs::copy(xz_data_path, &out_xz_path)
             .expect("Failed to copy embedded data to OUT_DIR");
         
         // Generate the data.rs file with embedded data
         let data_rs_content = format!(
             r#"
-// Generated at build time - contains embedded application data
-const ZIP_DATA: &[u8] = include_bytes!("embedded_data.zip");
+// Generated at build time - contains embedded application data (xz-compressed zip)
+const XZ_DATA: &[u8] = include_bytes!("embedded_data.xz");
 const BUILD_ID: &str = "{}";
 "#,
             build_id.trim()
@@ -36,7 +36,7 @@ const BUILD_ID: &str = "{}";
         // Generate placeholder data for template compilation
         let data_rs_content = r#"
 // Placeholder data for template compilation
-const ZIP_DATA: &[u8] = &[];
+const XZ_DATA: &[u8] = &[];
 const BUILD_ID: &str = "template";
 "#;
         
@@ -45,6 +45,6 @@ const BUILD_ID: &str = "template";
     }
     
     // Tell Cargo to rerun this script if the embedded data changes
-    println!("cargo:rerun-if-changed=embedded_data.zip");
+    println!("cargo:rerun-if-changed=embedded_data.xz");
     println!("cargo:rerun-if-changed=build_id.txt");
 }

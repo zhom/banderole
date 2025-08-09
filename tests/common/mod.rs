@@ -674,31 +674,24 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // Build command to run the executable. On Windows, copy to a temp dir to avoid
-        // path locking/races under concurrent CreateProcess, then run from there.
+        // Build command to run the executable.
+        let exec_path_owned = executable_path.to_path_buf();
+        // Use verbatim long-path prefix on Windows to avoid MAX_PATH issues,
+        // otherwise use the original path.
         #[cfg(windows)]
-        let (exec_path_owned, _tmp_guard) = {
-            let tmp = TempDir::new().context("Failed to create temp dir for executable copy")?;
-            let file_name = executable_path.file_name().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Executable path missing file name: {}",
-                    executable_path.display()
-                )
-            })?;
-            let dest = tmp.path().join(file_name);
-            std::fs::copy(executable_path, &dest).with_context(|| {
-                format!(
-                    "Failed to copy executable to temporary directory: {} -> {}",
-                    executable_path.display(),
-                    dest.display()
-                )
-            })?;
-            (dest, tmp)
+        let exec_cmd = {
+            use std::ffi::OsString;
+            let abs = exec_path_owned
+                .canonicalize()
+                .unwrap_or_else(|_| exec_path_owned.clone());
+            let mut s: OsString = OsString::from(r"\\?\");
+            s.push(&abs);
+            s
         };
         #[cfg(not(windows))]
-        let exec_path_owned = executable_path.to_path_buf();
+        let exec_cmd = exec_path_owned.as_os_str().to_os_string();
 
-        let mut cmd = Command::new(&exec_path_owned);
+        let mut cmd = Command::new(&exec_cmd);
         if let Some(parent) = exec_path_owned.parent() {
             cmd.current_dir(parent);
         }

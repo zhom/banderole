@@ -29,12 +29,12 @@ impl Platform {
 
     pub fn node_archive_name(&self, version: &str) -> String {
         match self {
-            Platform::LinuxX64 => format!("node-v{version}-linux-x64.tar.gz"),
-            Platform::LinuxArm64 => format!("node-v{version}-linux-arm64.tar.gz"),
-            Platform::MacosX64 => format!("node-v{version}-darwin-x64.tar.gz"),
-            Platform::MacosArm64 => format!("node-v{version}-darwin-arm64.tar.gz"),
-            Platform::WindowsX64 => format!("node-v{version}-win-x64.zip"),
-            Platform::WindowsArm64 => format!("node-v{version}-win-arm64.zip"),
+            Platform::LinuxX64 => format!("node-v{version}-linux-x64.tar.xz"),
+            Platform::LinuxArm64 => format!("node-v{version}-linux-arm64.tar.xz"),
+            Platform::MacosX64 => format!("node-v{version}-darwin-x64.tar.xz"),
+            Platform::MacosArm64 => format!("node-v{version}-darwin-arm64.tar.xz"),
+            Platform::WindowsX64 => format!("node-v{version}-win-x64.7z"),
+            Platform::WindowsArm64 => format!("node-v{version}-win-arm64.7z"),
         }
     }
 

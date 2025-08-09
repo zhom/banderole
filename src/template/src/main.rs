@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::ffi::OsString;
 use zip::ZipArchive;
 use directories::BaseDirs;
 use fs2::FileExt;
@@ -65,29 +66,59 @@ fn get_cache_dir() -> Result<PathBuf> {
 }
 
 fn get_node_executable_path(app_dir: &Path) -> PathBuf {
+    let node_dir = app_dir.join("node");
     if cfg!(windows) {
-        // On Windows, Node.js is extracted to node/{platform}/node.exe
-        // Try to find the platform-specific subdirectory
-        let node_dir = app_dir.join("node");
-        
-        // Look for platform-specific subdirectories
-        if let Ok(entries) = fs::read_dir(&node_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let node_exe = path.join("node.exe");
-                    if node_exe.exists() {
-                        return node_exe;
+        // Prefer common locations first
+        let candidates = [
+            node_dir.join("node.exe"),
+        ];
+        for c in candidates {
+            if c.exists() {
+                return c;
+            }
+        }
+
+        // Recursively search for node.exe under node/
+        if node_dir.exists() {
+            for entry in walkdir::WalkDir::new(&node_dir).follow_links(true) {
+                if let Ok(e) = entry {
+                    let p = e.path();
+                    if p.is_file() {
+                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                            if name.eq_ignore_ascii_case("node.exe") {
+                                return p.to_path_buf();
+                            }
+                        }
                     }
                 }
             }
         }
-        
-        // Fallback to direct path (shouldn't happen with new extraction logic)
+
+        // Fallback: default where Windows Node is usually at after extraction
         node_dir.join("node.exe")
     } else {
         // On Unix systems, Node.js is in node/bin/node
-        app_dir.join("node").join("bin").join("node")
+        let candidate = node_dir.join("bin").join("node");
+        if candidate.exists() {
+            candidate
+        } else {
+            // As a last resort, search recursively
+            if node_dir.exists() {
+                for entry in walkdir::WalkDir::new(&node_dir).follow_links(true) {
+                    if let Ok(e) = entry {
+                        let p = e.path();
+                        if p.is_file() {
+                            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                                if name == "node" {
+                                    return p.to_path_buf();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            candidate
+        }
     }
 }
 
@@ -136,8 +167,14 @@ fn extract_application(app_dir: &Path) -> Result<()> {
     // Create app directory
     fs::create_dir_all(app_dir).context("Failed to create app directory")?;
     
-    // Extract embedded zip data
-    let cursor = Cursor::new(ZIP_DATA);
+    // Decompress embedded XZ data to get inner ZIP, then extract
+    let mut tar_buf: Vec<u8> = Vec::new();
+    {
+        let mut reader = Cursor::new(XZ_DATA);
+        lzma_rs::xz_decompress(&mut reader, &mut tar_buf)
+            .context("Failed to decompress embedded xz data")?;
+    }
+    let cursor = Cursor::new(tar_buf);
     let mut archive = ZipArchive::new(cursor).context("Failed to open embedded zip archive")?;
     
     for i in 0..archive.len() {
@@ -296,12 +333,26 @@ fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
     let mut cmd_args = vec![main_script.clone()];
     cmd_args.extend(args.iter().cloned());
     
-    // Execute Node.js application with a few retries to tolerate transient Windows issues
-    let mut status = None;
     let mut last_err: Option<anyhow::Error> = None;
     let max_attempts: u32 = 8;
+    let mut status: Option<std::process::ExitStatus> = None;
     for attempt in 1..=max_attempts {
-        match Command::new(&node_executable)
+        // Prepend Node's directory to PATH and launch via program name to avoid path parsing quirks
+        let node_bin_dir = node_executable
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid node executable path: {}", node_executable.display()))?
+            .to_path_buf();
+        let program_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let mut cmd = Command::new(program_name);
+        // Ensure PATH includes the Node directory first
+        let mut new_path = std::env::var_os("PATH").unwrap_or_default();
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let mut prefixed: OsString = OsString::new();
+        prefixed.push(node_bin_dir.as_os_str());
+        prefixed.push(sep);
+        prefixed.push(&new_path);
+        cmd.env("PATH", prefixed);
+        match cmd
             .args(&cmd_args)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())

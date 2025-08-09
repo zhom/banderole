@@ -31,8 +31,17 @@ pub fn create_self_extracting_executable_with_progress(
 
     copy_template_to_build_dir(build_dir)?;
 
-    let zip_path = build_dir.join("embedded_data.zip");
-    fs::write(&zip_path, &zip_data).context("Failed to write embedded zip data")?;
+    // For improved compression ratio, store an xz-compressed stream of the zip payload.
+    // The template executable will decompress XZ first, then read the inner zip.
+    let xz_path = build_dir.join("embedded_data.xz");
+    {
+        use std::io::Cursor;
+        let mut xz_bytes: Vec<u8> = Vec::new();
+        let mut reader = Cursor::new(&zip_data);
+        lzma_rs::xz_compress(&mut reader, &mut xz_bytes)
+            .context("Failed to XZ-compress embedded payload")?;
+        fs::write(&xz_path, &xz_bytes).context("Failed to write embedded xz data")?;
+    }
 
     let build_id_path = build_dir.join("build_id.txt");
     fs::write(&build_id_path, &build_id).context("Failed to write build ID")?;
