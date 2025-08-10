@@ -973,10 +973,17 @@ packages:
 
     // Simulate a real pnpm installation by installing the actual dependency
     println!("Installing pnpm dependencies for test...");
-    let pnpm_install = Command::new("pnpm")
-        .args(["install"])
-        .current_dir(&test_app_path)
-        .output();
+    let pnpm_install = if cfg!(windows) {
+        Command::new("cmd")
+            .args(["/C", "pnpm", "install"])
+            .current_dir(&test_app_path)
+            .output()
+    } else {
+        Command::new("pnpm")
+            .args(["install"])
+            .current_dir(&test_app_path)
+            .output()
+    };
 
     match pnpm_install {
         Ok(output) if output.status.success() => {
@@ -990,10 +997,17 @@ packages:
             println!("Falling back to npm install...");
 
             // Fallback to npm if pnpm is not available
-            let npm_install = Command::new("npm")
-                .args(["install", "adm-zip"])
-                .current_dir(&test_app_path)
-                .output()?;
+            let npm_install = if cfg!(windows) {
+                Command::new("cmd")
+                    .args(["/C", "npm", "install", "adm-zip"])
+                    .current_dir(&test_app_path)
+                    .output()?
+            } else {
+                Command::new("npm")
+                    .args(["install", "adm-zip"])
+                    .current_dir(&test_app_path)
+                    .output()?
+            };
 
             if !npm_install.status.success() {
                 return Err("Failed to install dependencies for test".into());
@@ -1003,10 +1017,17 @@ packages:
             println!("pnpm not found, falling back to npm install...");
 
             // Fallback to npm if pnpm is not available
-            let npm_install = Command::new("npm")
-                .args(["install", "adm-zip"])
-                .current_dir(&test_app_path)
-                .output()?;
+            let npm_install = if cfg!(windows) {
+                Command::new("cmd")
+                    .args(["/C", "npm", "install", "adm-zip"])
+                    .current_dir(&test_app_path)
+                    .output()?
+            } else {
+                Command::new("npm")
+                    .args(["install", "adm-zip"])
+                    .current_dir(&test_app_path)
+                    .output()?
+            };
 
             if !npm_install.status.success() {
                 return Err("Failed to install dependencies for test".into());
@@ -1178,12 +1199,20 @@ async fn test_bundle_simple_project() {
     fs::write(project_path.join("package.json"), package_json).unwrap();
     fs::write(project_path.join("index.js"), index_js).unwrap();
 
-    // Install dependencies using npm (simpler than pnpm for this test)
-    let npm_install = Command::new("npm")
-        .arg("install")
-        .current_dir(&project_path)
-        .output()
-        .unwrap();
+    // Install dependencies using npm (use platform-appropriate invocation)
+    let npm_install = if cfg!(windows) {
+        Command::new("cmd")
+            .args(["/C", "npm", "install"])
+            .current_dir(&project_path)
+            .output()
+            .unwrap()
+    } else {
+        Command::new("npm")
+            .arg("install")
+            .current_dir(&project_path)
+            .output()
+            .unwrap()
+    };
 
     assert!(npm_install.status.success(), "npm install failed");
 

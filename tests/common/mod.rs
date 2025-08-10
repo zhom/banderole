@@ -699,50 +699,33 @@ impl BundlerTestHelper {
 
         // Build command to run the executable.
         #[cfg(windows)]
-        let (exec_to_run, work_dir) = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let temp_dir = std::env::temp_dir();
+        let (exec_to_run, work_dir, _run_guard) = {
+            // Create a unique temp directory per invocation to avoid filename races
+            let run_dir = TempDir::new().context("Failed to create temp dir for run copy")?;
             let mut base = executable_path
                 .file_name()
                 .map(|s| s.to_os_string())
                 .unwrap_or_else(|| "app.exe".into());
-            // Ensure .exe extension is present
             if Path::new(&base).extension().is_none() {
                 base.push(".exe");
             }
-            let mut candidate = temp_dir.join(&base);
-            if candidate.exists() {
-                let stamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let stem = Path::new(&base)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("app");
-                let ext = Path::new(&base)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("exe");
-                candidate = temp_dir.join(format!("{stem}-{stamp}.{ext}"));
-            }
+            let candidate = run_dir.path().join(&base);
             std::fs::copy(executable_path, &candidate).with_context(|| {
                 format!(
-                    "Failed to copy executable to temp: {} -> {}",
+                    "Failed to copy executable to temp dir: {} -> {}",
                     executable_path.display(),
                     candidate.display()
                 )
             })?;
-            // Give Windows a brief moment to finalize the new executable on disk
+            // Small delay to allow AV/file indexing to settle
             std::thread::sleep(std::time::Duration::from_millis(50));
-            // Verify existence
             if !candidate.exists() {
                 anyhow::bail!(
                     "Temp executable not found after copy: {}",
                     candidate.display()
                 );
             }
-            (candidate, temp_dir)
+            (candidate, run_dir.path().to_path_buf(), run_dir)
         };
 
         #[cfg(not(windows))]
