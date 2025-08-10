@@ -738,9 +738,23 @@ impl BundlerTestHelper {
 
         println!("Executing: {} with args: {:?}", exec_to_run.display(), args);
 
+        // Build a verbatim Windows path to avoid MAX_PATH and normalization issues
+        #[cfg(windows)]
+        let exec_for_spawn = {
+            use std::ffi::OsString;
+            let abs = exec_to_run
+                .canonicalize()
+                .unwrap_or_else(|_| exec_to_run.clone());
+            let mut s: OsString = OsString::from(r"\\?\");
+            s.push(&abs);
+            s
+        };
+        #[cfg(not(windows))]
+        let exec_for_spawn = exec_to_run.as_os_str().to_os_string();
+
         // First try direct spawn
         let direct = {
-            let mut cmd = Command::new(&exec_to_run);
+            let mut cmd = Command::new(&exec_for_spawn);
             cmd.args(args);
             for (key, value) in env_vars {
                 cmd.env(key, value);
@@ -753,12 +767,21 @@ impl BundlerTestHelper {
         let output = match direct {
             Ok(o) => Ok(o),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut all_args: Vec<String> = Vec::with_capacity(1 + 1 + args.len());
-                all_args.push("/C".to_string());
-                all_args.push(exec_to_run.display().to_string());
-                all_args.extend(args.iter().map(|a| a.to_string()));
+                // Retry via cmd /C with proper quoting
+                fn quote(s: &str) -> String {
+                    let mut out = String::from("\"");
+                    out.push_str(&s.replace('"', "\\\""));
+                    out.push('"');
+                    out
+                }
+                let exe_str = exec_to_run.display().to_string();
+                let mut cmdline = quote(&exe_str);
+                for a in args {
+                    cmdline.push(' ');
+                    cmdline.push_str(&quote(a));
+                }
                 let mut c2 = Command::new("cmd");
-                c2.args(&all_args).current_dir(&work_dir);
+                c2.args(["/C", &cmdline]).current_dir(&work_dir);
                 for (key, value) in env_vars {
                     c2.env(key, value);
                 }

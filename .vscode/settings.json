@@ -2,6 +2,7 @@
     "cSpell.words": [
         "chrono",
         "Clippy",
+        "cmdline",
         "codegen",
         "dtolnay",
         "enabledelayedexpansion",
