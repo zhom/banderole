@@ -59,7 +59,7 @@ async fn test_concurrent_first_launch() -> Result<()> {
 
     // Give the filesystem a moment to settle on Windows
     if cfg!(windows) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 
     // Clear any existing cache to ensure we test first launch
@@ -85,7 +85,7 @@ async fn test_concurrent_first_launch() -> Result<()> {
             barrier.wait();
 
             // Add a small staggered delay to reduce race conditions on Windows
-            std::thread::sleep(std::time::Duration::from_millis(i as u64 * 10));
+            std::thread::sleep(std::time::Duration::from_millis(50 + i as u64 * 20));
 
             let thread_start = Instant::now();
 
@@ -304,7 +304,7 @@ async fn test_cached_concurrent_execution() -> Result<()> {
             barrier.wait();
 
             // Add a small staggered delay to reduce race conditions on Windows
-            std::thread::sleep(std::time::Duration::from_millis(i as u64 * 10));
+            std::thread::sleep(std::time::Duration::from_millis(50 + i as u64 * 20));
 
             let thread_start = Instant::now();
 

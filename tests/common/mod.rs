@@ -700,8 +700,11 @@ impl BundlerTestHelper {
         // Build command to run the executable.
         #[cfg(windows)]
         let (exec_to_run, work_dir, _run_guard) = {
-            // Create a unique temp directory per invocation to avoid filename races
-            let run_dir = TempDir::new().context("Failed to create temp dir for run copy")?;
+            // Copy to a unique name in the same directory as the original to avoid policy issues with %TEMP%
+            let parent = executable_path.parent().ok_or_else(|| {
+                anyhow::anyhow!("Executable has no parent: {}", executable_path.display())
+            })?;
+            let run_dir = TempDir::new_in(parent).unwrap_or_else(|_| TempDir::new().unwrap());
             let mut base = executable_path
                 .file_name()
                 .map(|s| s.to_os_string())
@@ -712,20 +715,19 @@ impl BundlerTestHelper {
             let candidate = run_dir.path().join(&base);
             std::fs::copy(executable_path, &candidate).with_context(|| {
                 format!(
-                    "Failed to copy executable to temp dir: {} -> {}",
+                    "Failed to copy executable to run dir: {} -> {}",
                     executable_path.display(),
                     candidate.display()
                 )
             })?;
-            // Small delay to allow AV/file indexing to settle
             std::thread::sleep(std::time::Duration::from_millis(50));
             if !candidate.exists() {
                 anyhow::bail!(
-                    "Temp executable not found after copy: {}",
+                    "Run executable not found after copy: {}",
                     candidate.display()
                 );
             }
-            (candidate, run_dir.path().to_path_buf(), run_dir)
+            (candidate, parent.to_path_buf(), run_dir)
         };
 
         #[cfg(not(windows))]
