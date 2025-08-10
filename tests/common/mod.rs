@@ -762,30 +762,47 @@ impl BundlerTestHelper {
             cmd.current_dir(&work_dir).output()
         };
 
-        // If NotFound on Windows, retry via cmd /C
+        // If NotFound on Windows, retry using the copied executable directly with verbatim prefix; else cmd /C
         #[cfg(windows)]
         let output = match direct {
             Ok(o) => Ok(o),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Retry via cmd /C with proper quoting
-                fn quote(s: &str) -> String {
-                    let mut out = String::from("\"");
-                    out.push_str(&s.replace('"', "\\\""));
-                    out.push('"');
-                    out
-                }
-                let exe_str = exec_to_run.display().to_string();
-                let mut cmdline = quote(&exe_str);
-                for a in args {
-                    cmdline.push(' ');
-                    cmdline.push_str(&quote(a));
-                }
-                let mut c2 = Command::new("cmd");
-                c2.args(["/C", &cmdline]).current_dir(&work_dir);
+                use std::ffi::OsString;
+                let abs = exec_to_run
+                    .canonicalize()
+                    .unwrap_or_else(|_| exec_to_run.clone());
+                let mut verbatim: OsString = OsString::from(r"\\?\");
+                verbatim.push(&abs);
+                let mut cmd = Command::new(&verbatim);
+                cmd.args(args).current_dir(&work_dir);
                 for (key, value) in env_vars {
-                    c2.env(key, value);
+                    cmd.env(key, value);
                 }
-                c2.output()
+                match cmd.output() {
+                    Ok(o2) => Ok(o2),
+                    Err(e2) if e2.kind() == std::io::ErrorKind::NotFound => {
+                        // Fallback to cmd /C with quoting
+                        fn quote(s: &str) -> String {
+                            let mut out = String::from("\"");
+                            out.push_str(&s.replace('"', "\\\""));
+                            out.push('"');
+                            out
+                        }
+                        let exe_str = exec_to_run.display().to_string();
+                        let mut cmdline = quote(&exe_str);
+                        for a in args {
+                            cmdline.push(' ');
+                            cmdline.push_str(&quote(a));
+                        }
+                        let mut c2 = Command::new("cmd");
+                        c2.args(["/C", &cmdline]).current_dir(&work_dir);
+                        for (key, value) in env_vars {
+                            c2.env(key, value);
+                        }
+                        c2.output()
+                    }
+                    Err(e2) => Err(e2),
+                }
             }
             Err(e) => Err(e),
         };
