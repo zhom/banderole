@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: Linux x64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux ARM64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macOS x64 (Intel)
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macOS ARM64 (Apple Silicon)
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            name: Windows ARM64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-release
+
+      - name: Show versions
+        run: |
+          rustc -Vv
+          cargo -V
+
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifacts directory
+        run: mkdir -p artifacts
+
+      - name: Package (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          BIN_NAME=banderole
+          TARGET_DIR=target/${{ matrix.target }}/release
+          ARCHIVE_NAME=${BIN_NAME}-${{ matrix.target }}.tar.gz
+          tar -C "${TARGET_DIR}" -czf "artifacts/${ARCHIVE_NAME}" "${BIN_NAME}"
+          # Include LICENSE and README alongside the binary in a second tarball
+          mkdir -p pkg && cp LICENSE README.md "${TARGET_DIR}/${BIN_NAME}" pkg/ 2>/dev/null || true
+          tar -czf "artifacts/${BIN_NAME}-${{ matrix.target }}-with-docs.tar.gz" -C pkg . || true
+
+      - name: Package (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $BinName = 'banderole.exe'
+          $TargetDir = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $Archive = "artifacts/banderole-${{ matrix.target }}.zip"
+          Compress-Archive -Path "$TargetDir/$BinName" -DestinationPath $Archive -Force
+          if (Test-Path 'LICENSE' -and Test-Path 'README.md') {
+            $DocsArchive = "artifacts/banderole-${{ matrix.target }}-with-docs.zip"
+            Compress-Archive -Path "$TargetDir/$BinName","LICENSE","README.md" -DestinationPath $DocsArchive -Force
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: banderole-${{ matrix.target }}
+          path: artifacts/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to crates.io
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish --locked
+
+
