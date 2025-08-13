@@ -2,14 +2,8 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
-      - 'v*.*.*'
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch:
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -93,7 +87,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $Archive = "artifacts/banderole-${{ matrix.target }}.zip"
           Compress-Archive -Path "$TargetDir/$BinName" -DestinationPath $Archive -Force
-          if (Test-Path 'LICENSE' -and Test-Path 'README.md') {
+          if ((Test-Path 'LICENSE') -and (Test-Path 'README.md')) {
             $DocsArchive = "artifacts/banderole-${{ matrix.target }}-with-docs.zip"
             Compress-Archive -Path "$TargetDir/$BinName","LICENSE","README.md" -DestinationPath $DocsArchive -Force
           }
