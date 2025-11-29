@@ -27,7 +27,7 @@ pub async fn bundle_project(
     project_path: PathBuf,
     output_path: Option<PathBuf>,
     custom_name: Option<String>,
-    no_compression: bool,
+    _no_compression: bool,
     ignore_cached_versions: bool,
     multi: &MultiProgress,
 ) -> Result<()> {
@@ -133,13 +133,10 @@ pub async fn bundle_project(
     let mut zip_data: Vec<u8> = Vec::new();
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
-        let opts: zip::write::FileOptions<'static, ()> = if no_compression {
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored)
-        } else {
-            zip::write::FileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated)
-                .compression_level(Some(8))
-        };
+        // Always use uncompressed (Stored) for near-instant extraction
+        // This makes the executable larger but launch time is much faster
+        let opts: zip::write::FileOptions<'static, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         // Pre-count app files
         let app_files = count_files_in_dir(&source_dir, true, true);
