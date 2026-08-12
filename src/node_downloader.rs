@@ -3,17 +3,15 @@ use crate::platform::Platform;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use lazy_static::lazy_static;
 use log::info;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-lazy_static! {
-    static ref NODE_VERSION_CACHE: Mutex<HashMap<String, PathBuf>> = Mutex::new(HashMap::new());
-}
+static NODE_VERSION_CACHE: LazyLock<Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct NodeDownloader {
     platform: Platform,
@@ -295,7 +293,7 @@ impl NodeDownloader {
             if let Some(pb) = &progress {
                 pb.set_message("Extracting 7z archive");
             }
-            sevenz_rust::decompress_file(&archive_path, &target_dir)
+            sevenz_rust2::decompress_file(&archive_path, &target_dir)
                 .context("Failed to extract 7z archive")?;
 
             // Post-process: many Node archives have a single top-level folder. Flatten it.

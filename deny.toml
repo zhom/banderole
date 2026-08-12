@@ -10,7 +10,11 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "Zlib",
-    "bzip2-1.0.6"
+    "bzip2-1.0.6",
+    # rustls stack (ring, untrusted, rustls-webpki) — replaces the OpenSSL/native-tls path.
+    "ISC",
+    # Mozilla root certificate bundle shipped by webpki-roots.
+    "CDLA-Permissive-2.0",
 ]
 
 confidence-threshold = 0.8

@@ -105,6 +105,10 @@ fn build_executable_with_progress(
     // Actual build; consume Cargo JSON messages to compute progress without a dry-run
     let mut cmd = Command::new("cargo");
     cmd.current_dir(build_dir)
+        // A CARGO_TARGET_DIR inherited from the caller's environment would redirect the
+        // launcher build somewhere else entirely, and we would then fail to find the binary
+        // under build_dir/target.
+        .env_remove("CARGO_TARGET_DIR")
         .args([
             "build",
             "--release",
@@ -323,25 +327,45 @@ fn build_executable_with_progress(
             .ok()
             .map(|s| s.clone())
             .unwrap_or_default();
-        let trim_tail = |mut s: String| {
+        // Keep the *end* of a long log: that is where the failure is. (The previous version
+        // discarded the result of `split_off`, which truncated the string in place and then
+        // printed the middle of the log, never the error itself.)
+        let trim_tail = |s: String| {
             const MAX: usize = 4000;
-            if s.len() > MAX {
-                s.split_off(s.len() - MAX)
-            } else {
-                String::new()
-            };
-            if s.len() > MAX {
-                s[s.len() - MAX..].to_string()
-            } else {
-                s
+            match s.char_indices().nth_back(MAX.saturating_sub(1)) {
+                Some((idx, _)) if s.len() > MAX => s[idx..].to_string(),
+                _ => s,
             }
         };
-        let out_tail = trim_tail(out);
-        let err_tail = trim_tail(err);
+
+        // cargo emits diagnostics as JSON on stdout; surface the rendered compiler errors
+        // directly instead of making the user read the raw message stream.
+        let diagnostics: Vec<String> = out
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| v.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
+            .filter_map(|v| {
+                let msg = v.get("message")?;
+                if msg.get("level").and_then(|l| l.as_str()) != Some("error") {
+                    return None;
+                }
+                msg.get("rendered")
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+
+        if !diagnostics.is_empty() {
+            anyhow::bail!(
+                "Cargo build failed.\nCompiler errors:\n{}",
+                trim_tail(diagnostics.join("\n"))
+            );
+        }
+
         anyhow::bail!(
             "Cargo build failed.\nLast stdout:\n{}\nLast stderr:\n{}",
-            out_tail,
-            err_tail
+            trim_tail(out),
+            trim_tail(err)
         );
     }
 
@@ -393,6 +417,7 @@ fn compute_total_via_cargo_metadata(build_dir: &Path, target_triple: &str) -> Re
     fn run_metadata(build_dir: &Path, args: &[&str]) -> Result<serde_json::Value> {
         let output = Command::new("cargo")
             .current_dir(build_dir)
+            .env_remove("CARGO_TARGET_DIR")
             .args(args)
             .output()
             .with_context(|| format!("Failed to run cargo {}", args.join(" ")))?;

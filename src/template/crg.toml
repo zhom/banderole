@@ -6,19 +6,21 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 directories = "6"
-zip = "4"
+# Only the codecs the bundler can actually emit. The default feature set drags in bzip2,
+# liblzma, aes, zopfli, deflate64 and ppmd-rust, none of which are ever used.
+zip = { version = "8", default-features = false, features = ["deflate", "zstd"] }
 serde_json = "1.0"
-fs2 = "0.4"
-walkdir = "2.4"
-rayon = "1.10"
+# fs2 is unmaintained (last release 2018); fs4 is the maintained fork.
+fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 
 [build-dependencies]
 # No build dependencies needed - data is embedded at compile time
 
-# Optimize for size and performance
+# The launcher's own code is a rounding error next to the embedded payload, so optimize the
+# extraction path for speed rather than for size.
 [profile.release]
-opt-level = "z"     # Optimize for size
-lto = true          # Enable Link Time Optimization
-codegen-units = 1   # Reduce number of codegen units to increase optimizations
-panic = "abort"     # Abort on panic (smaller binary)
-strip = true        # Strip symbols from binary
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

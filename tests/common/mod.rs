@@ -816,7 +816,7 @@ impl BundlerTestHelper {
                 exec_to_run.display(),
                 args,
                 env_vars,
-                &work_dir
+                work_dir
             )
         })?;
         Ok(output)
@@ -862,24 +862,24 @@ impl BundlerTestHelper {
 pub struct TestCacheManager;
 
 impl TestCacheManager {
+    /// The directory the launcher extracts bundles into, matching `directories::BaseDirs`.
+    pub fn application_cache_dir() -> PathBuf {
+        if cfg!(windows) {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|d| PathBuf::from(d).join("banderole"))
+                .unwrap_or_else(|| PathBuf::from("banderole-cache"))
+        } else if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
+            PathBuf::from(xdg_cache).join("banderole")
+        } else if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join(".cache").join("banderole")
+        } else {
+            PathBuf::from("/tmp").join("banderole-cache")
+        }
+    }
+
     /// Clear application cache for testing
     pub fn clear_application_cache() -> Result<()> {
-        // Determine cache directory based on platform
-        let cache_dir = if cfg!(windows) {
-            if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-                std::path::PathBuf::from(local_app_data).join("banderole")
-            } else {
-                return Ok(()); // Can't determine cache dir, skip cleanup
-            }
-        } else if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
-            std::path::PathBuf::from(xdg_cache).join("banderole")
-        } else if let Some(home) = std::env::var_os("HOME") {
-            std::path::PathBuf::from(home)
-                .join(".cache")
-                .join("banderole")
-        } else {
-            std::path::PathBuf::from("/tmp").join("banderole-cache")
-        };
+        let cache_dir = Self::application_cache_dir();
 
         if cache_dir.exists() {
             println!("Clearing application cache at: {}", cache_dir.display());

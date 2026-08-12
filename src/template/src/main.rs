@@ -1,182 +1,115 @@
 use anyhow::{Context, Result};
 use directories::BaseDirs;
-use fs2::FileExt;
-use rayon::prelude::*;
+use fs4::FileExt;
 use std::env;
 use std::fs;
-use std::io::Cursor;
+use std::collections::BTreeSet;
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use zip::ZipArchive;
 
 // These will be replaced during the build process with actual embedded data
 // The build script will generate a data.rs file with the actual data
 include!(concat!(env!("OUT_DIR"), "/data.rs"));
 
+/// Name of the marker file written after a successful extraction. Its contents are the
+/// resolved main script path, so the warm path never has to parse package.json.
+const READY_FILE: &str = ".ready";
+
+/// Entries at or below this size are decompressed into a reusable buffer and written with a
+/// single `write_all`; larger ones stream through a buffered writer.
+const SMALL_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One archive entry's destination, resolved during the planning pass so the parallel write
+/// pass never has to touch shared metadata.
+struct PlannedFile {
+    index: usize,
+    path: PathBuf,
+    size: u64,
+    #[cfg(unix)]
+    mode: Option<u32>,
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
+    // args_os, not args: a bundled app must be able to receive non-UTF-8 arguments such as
+    // a filename in an arbitrary encoding. `env::args()` panics on those.
+    let args: Vec<std::ffi::OsString> = env::args_os().collect();
 
-    // Get cache directory
-    let cache_dir = get_cache_dir().context("Failed to determine cache directory")?;
-    let app_dir = cache_dir.join(&BUILD_ID);
-    let ready_file = app_dir.join(".ready");
+    let cache_dir = get_cache_dir_fast().context("Failed to determine cache directory")?;
+    let app_dir = cache_dir.join(BUILD_ID);
 
-    // Check if already extracted and ready
-    if ready_file.exists() && is_extraction_valid(&app_dir)? {
-        return run_app(&app_dir, &args[1..]);
+    // Warm path: a single read of the ready marker gives us everything we need. If anything
+    // about the cache is stale or damaged, `run_app` returns and we fall through to a full
+    // re-extraction below, so we do not need to stat the payload up front.
+    if let Ok(main_script) = fs::read_to_string(app_dir.join(READY_FILE)) {
+        let main_script = main_script.trim();
+        if !main_script.is_empty() {
+            run_app(&app_dir, main_script, &args[1..])?;
+        }
     }
 
-    // Use file locking to prevent concurrent extraction
-    let lock_file_path = cache_dir.join(format!("{}.lock", BUILD_ID));
+    // Cold path: extract under an exclusive lock so concurrent launches cooperate.
+    fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
+    let lock_file_path = cache_dir.join(format!("{BUILD_ID}.lock"));
     let lock_file = fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_file_path)
         .with_context(|| format!("Failed to create lock file at {}", lock_file_path.display()))?;
 
-    // Acquire exclusive lock
-    lock_file
-        .lock_exclusive()
-        .context("Failed to acquire extraction lock")?;
+    FileExt::lock(&lock_file).context("Failed to acquire extraction lock")?;
 
-    // Double-check if extraction completed while waiting for lock
-    if ready_file.exists() && is_extraction_valid(&app_dir)? {
-        // Release lock and run
-        lock_file.unlock().ok();
-        return run_app(&app_dir, &args[1..]);
+    // Another process may have completed the extraction while we waited for the lock. Keep
+    // holding the lock across this attempt: a successful exec drops it automatically (the fd
+    // is close-on-exec), and if the cache turns out to be unusable we still own the right to
+    // re-extract below.
+    let ready_path = app_dir.join(READY_FILE);
+    if let Ok(main_script) = fs::read_to_string(&ready_path) {
+        let main_script = main_script.trim().to_string();
+        if !main_script.is_empty() {
+            run_app(&app_dir, &main_script, &args[1..])?;
+        }
     }
 
-    // Extract application if needed
     extract_application(&app_dir)
         .with_context(|| format!("Failed to extract application to {}", app_dir.display()))?;
 
-    // Mark as ready
-    fs::write(&ready_file, "ready")
-        .with_context(|| format!("Failed to create ready file at {}", ready_file.display()))?;
+    let main_script = find_main_script(&app_dir.join("app"))?;
 
-    // Release lock
-    lock_file
-        .unlock()
+    // The ready marker doubles as the cache of the resolved main script. Write it last so a
+    // partially extracted directory is never mistaken for a usable one.
+    fs::write(&ready_path, &main_script)
+        .with_context(|| format!("Failed to create ready file at {}", ready_path.display()))?;
+
+    FileExt::unlock(&lock_file)
         .context("Failed to release extraction lock")?;
 
-    // Run the application
-    run_app(&app_dir, &args[1..])
+    run_app(&app_dir, &main_script, &args[1..])?;
+
+    // `run_app` only returns when it could not start Node at all.
+    Err(anyhow::anyhow!(
+        "Failed to execute Node.js application from {}",
+        app_dir.display()
+    ))
 }
 
-fn get_cache_dir() -> Result<PathBuf> {
-    let cache_dir = BaseDirs::new().unwrap().cache_dir().join("banderole");
-    fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
-    Ok(cache_dir)
+fn get_cache_dir_fast() -> Result<PathBuf> {
+    // Deliberately does not create the directory: the warm path never needs it to exist, and
+    // create_dir_all costs a syscall on every launch.
+    let base = BaseDirs::new().context("Failed to determine base directories")?;
+    Ok(base.cache_dir().join("banderole"))
 }
 
 fn get_node_executable_path(app_dir: &Path) -> PathBuf {
     let node_dir = app_dir.join("node");
     if cfg!(windows) {
-        // Prefer common locations first
-        let candidates = [node_dir.join("node.exe")];
-        for c in candidates {
-            if c.exists() {
-                return c;
-            }
-        }
-
-        // Recursively search for node.exe under node/
-        if node_dir.exists() {
-            for entry in walkdir::WalkDir::new(&node_dir).follow_links(true) {
-                if let Ok(e) = entry {
-                    let p = e.path();
-                    if p.is_file() {
-                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                            if name.eq_ignore_ascii_case("node.exe") {
-                                return p.to_path_buf();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: default where Windows Node is usually at after extraction
         node_dir.join("node.exe")
     } else {
-        // On Unix systems, Node.js is in node/bin/node
-        let candidate = node_dir.join("bin").join("node");
-        if candidate.exists() {
-            candidate
-        } else {
-            // As a last resort, search recursively
-            if node_dir.exists() {
-                for entry in walkdir::WalkDir::new(&node_dir).follow_links(true) {
-                    if let Ok(e) = entry {
-                        let p = e.path();
-                        if p.is_file() {
-                            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                                if name == "node" {
-                                    return p.to_path_buf();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            candidate
-        }
+        node_dir.join("bin").join("node")
     }
-}
-
-fn is_extraction_valid(app_dir: &Path) -> Result<bool> {
-    let app_package_json = app_dir.join("app").join("package.json");
-    let node_executable = get_node_executable_path(app_dir);
-    #[cfg(windows)]
-    let node_executable = node_executable
-        .canonicalize()
-        .unwrap_or_else(|_| node_executable.clone());
-
-    let package_exists = app_package_json.exists();
-    let node_exists = node_executable.exists();
-
-    if !package_exists || !node_exists {
-        // Log debugging information for failed validation
-        eprintln!("Extraction validation failed:");
-        eprintln!("  App directory: {}", app_dir.display());
-        eprintln!(
-            "  Package.json exists: {} ({})",
-            package_exists,
-            app_package_json.display()
-        );
-        eprintln!(
-            "  Node executable exists: {} ({})",
-            node_exists,
-            node_executable.display()
-        );
-
-        if let Ok(entries) = fs::read_dir(app_dir) {
-            eprintln!("  App directory contents:");
-            for entry in entries.flatten() {
-                eprintln!("    - {}", entry.file_name().to_string_lossy());
-            }
-        }
-
-        if let Ok(entries) = fs::read_dir(app_dir.join("node")) {
-            eprintln!("  Node directory contents:");
-            for entry in entries.flatten() {
-                eprintln!("    - {}", entry.file_name().to_string_lossy());
-            }
-        }
-    }
-
-    Ok(package_exists && node_exists)
-}
-
-struct FileEntry {
-    path: PathBuf,
-    data: Vec<u8>,
-    #[cfg(unix)]
-    mode: Option<u32>,
-}
-
-struct DirEntry {
-    path: PathBuf,
 }
 
 fn extract_application(app_dir: &Path) -> Result<()> {
@@ -185,265 +118,277 @@ fn extract_application(app_dir: &Path) -> Result<()> {
         fs::remove_dir_all(app_dir).context("Failed to remove existing app directory")?;
     }
 
-    // Create app directory
     fs::create_dir_all(app_dir).context("Failed to create app directory")?;
 
-    // Read ZIP data directly from embedded bytes (no XZ decompression needed)
-    let cursor = Cursor::new(ZIP_DATA);
-    let mut archive = ZipArchive::new(cursor).context("Failed to open embedded zip archive")?;
+    // Parsed exactly once. `ZipArchive` holds its central directory behind an `Arc`, so the
+    // per-worker clones below are O(1) — re-opening the archive per worker instead would
+    // re-parse every entry per thread, which is the difference between 110k and 1.7M entry
+    // parses on a large project.
+    let archive =
+        ZipArchive::new(Cursor::new(ZIP_DATA)).context("Failed to open embedded zip archive")?;
+    let len = archive.len();
 
-    // First pass: collect all entries from the ZIP archive
-    let mut files = Vec::new();
-    let mut dirs = Vec::new();
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).context("Failed to read zip entry")?;
-
-        // Get the file name from the zip entry (clone to owned String to avoid borrow issues)
-        let file_name = file.name().to_string();
-
-        // Skip entries with invalid characters or paths
-        if file_name.is_empty() || file_name.contains('\0') {
-            continue;
-        }
-
-        // Determine if this is a directory entry
-        let is_directory = file_name.ends_with('/') || file.is_dir();
-
-        // Skip empty directory entries that are just the trailing slash
-        if is_directory && (file_name == "/" || file_name.trim_matches('/').is_empty()) {
-            continue;
-        }
-
-        // Remove trailing slash for proper path construction
-        let clean_file_name = if is_directory {
-            file_name.trim_end_matches('/').to_string()
-        } else {
-            file_name.clone()
-        };
-
-        // Skip if the cleaned name is empty (shouldn't happen but be safe)
-        if clean_file_name.is_empty() {
-            continue;
-        }
-
-        // Use proper path handling instead of string replacement
-        // Split the path by forward slashes and join using PathBuf for proper platform handling
-        let path_components: Vec<&str> = clean_file_name
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        // Skip if no valid path components
-        if path_components.is_empty() {
-            continue;
-        }
-
-        let mut outpath = app_dir.to_path_buf();
-        for component in path_components {
-            outpath = outpath.join(component);
-        }
-
-        // Ensure the path is within the app directory (security check)
-        if !outpath.starts_with(app_dir) {
-            continue;
-        }
-
-        if is_directory {
-            dirs.push(DirEntry { path: outpath });
-        } else {
-            // Read file data into memory
-            let mut data = Vec::new();
-            std::io::copy(&mut file, &mut data)
-                .with_context(|| format!("Failed to read file data from {}", file_name))?;
-
+    // Resolve every entry's destination path up front (metadata only), so the write pass can
+    // run in parallel without touching the shared central directory.
+    let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut files: Vec<PlannedFile> = Vec::with_capacity(len);
+    {
+        let mut archive = archive.clone();
+        // Entries arrive in directory-walk order, so consecutive files nearly always share a
+        // parent. Remembering the last one turns ~100k set insertions into ~10k.
+        let mut last_parent: Option<PathBuf> = None;
+        for index in 0..len {
+            let entry = archive
+                .by_index_raw(index)
+                .context("Failed to read zip entry")?;
+            let is_dir = entry.is_dir() || entry.name().ends_with('/');
+            let Some(path) = safe_join(app_dir, entry.name()) else {
+                continue;
+            };
+            let size = entry.size();
             #[cfg(unix)]
-            let mode = file.unix_mode();
+            let mode = entry.unix_mode();
+            drop(entry);
 
-            files.push(FileEntry {
-                path: outpath,
-                data,
+            if is_dir {
+                dirs.insert(path);
+                continue;
+            }
+
+            if let Some(parent) = path.parent() {
+                // Archives do not reliably carry directory entries, so every file's parent is
+                // recorded too.
+                if last_parent.as_deref() != Some(parent) {
+                    dirs.insert(parent.to_path_buf());
+                    last_parent = Some(parent.to_path_buf());
+                }
+            }
+            files.push(PlannedFile {
+                index,
+                path,
+                size,
                 #[cfg(unix)]
                 mode,
             });
         }
     }
 
-    // Second pass: create all directories (must be sequential to avoid conflicts)
-    for dir in dirs {
-        fs::create_dir_all(&dir.path)
-            .with_context(|| format!("Failed to create directory '{}'", dir.path.display()))?;
+    // Sorted order means a parent is always created before its children, and `create_dir_all`
+    // then short-circuits on the already-existing prefix.
+    for dir in &dirs {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create directory '{}'", dir.display()))?;
     }
 
-    // Third pass: write all files in parallel for maximum speed
-    files.par_iter().try_for_each(|entry| -> Result<()> {
-        // Create parent directories first
-        if let Some(parent) = entry.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create parent directory '{}' for file '{}'",
-                    parent.display(),
-                    entry.path.display()
-                )
-            })?;
+    // Largest first. The bundler appends the ~105 MB Node binary as the *last* entry, so any
+    // static split of the work list hands it to one worker that is still writing long after
+    // the rest have finished. Longest-job-first plus a shared cursor keeps every core busy to
+    // the end.
+    files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(files.len().max(1));
+    let next = AtomicUsize::new(0);
+
+    let result: Result<()> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let mut archive = archive.clone();
+            let files = &files;
+            let next = &next;
+            handles.push(scope.spawn(move || -> Result<()> {
+                // Reused across entries so the common small-file case is one allocation per
+                // worker rather than one per file.
+                let mut buf: Vec<u8> = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(planned) = files.get(i) else { break };
+                    let path = &planned.path;
+
+                    let mut entry = archive
+                        .by_index(planned.index)
+                        .context("Failed to read zip entry")?;
+                    let mut out = fs::File::create(path)
+                        .with_context(|| format!("Failed to create file {}", path.display()))?;
+
+                    if planned.size <= SMALL_ENTRY_BYTES {
+                        buf.clear();
+                        buf.reserve(planned.size as usize);
+                        entry
+                            .read_to_end(&mut buf)
+                            .with_context(|| format!("Failed to read {}", path.display()))?;
+                        out.write_all(&buf).with_context(|| {
+                            format!("Failed to write file to {}", path.display())
+                        })?;
+                    } else {
+                        // A big entry through io::copy's 8 KiB loop is tens of thousands of
+                        // write syscalls; buffer it instead.
+                        let mut writer = std::io::BufWriter::with_capacity(1 << 20, &mut out);
+                        std::io::copy(&mut entry, &mut writer).with_context(|| {
+                            format!("Failed to write file to {}", path.display())
+                        })?;
+                        writer.flush().with_context(|| {
+                            format!("Failed to flush file {}", path.display())
+                        })?;
+                    }
+
+                    #[cfg(unix)]
+                    {
+                        if let Some(mode) = planned.mode {
+                            use std::os::unix::fs::PermissionsExt;
+                            // fchmod on the open descriptor: no second path resolution, and
+                            // identical semantics to the previous path-based set_permissions.
+                            out.set_permissions(std::fs::Permissions::from_mode(mode))
+                                .with_context(|| {
+                                    format!("Failed to set permissions on {}", path.display())
+                                })?;
+                        }
+                    }
+                }
+                Ok(())
+            }));
         }
-
-        // Write file
-        fs::write(&entry.path, &entry.data)
-            .with_context(|| format!("Failed to write file to {}", entry.path.display()))?;
-
-        // Set executable permissions on Unix systems
-        #[cfg(unix)]
-        {
-            if let Some(mode) = entry.mode {
-                use std::os::unix::fs::PermissionsExt;
-                let permissions = std::fs::Permissions::from_mode(mode);
-                fs::set_permissions(&entry.path, permissions).with_context(|| {
-                    format!("Failed to set permissions on {}", entry.path.display())
-                })?;
-            }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("extraction worker panicked"))??;
         }
-
         Ok(())
-    })?;
+    });
+    result?;
 
     Ok(())
 }
 
-fn run_app(app_dir: &Path, args: &[String]) -> Result<()> {
+/// Join a zip entry name onto `root`, rejecting absolute paths and traversal escapes.
+///
+/// Both `/` and `\` are treated as separators regardless of host platform. Zip names are
+/// specified to use `/`, but `PathBuf::push` also splits on `\` under Windows — so accepting
+/// a backslash as an ordinary character here would let an entry named `a\..\..\evil` escape
+/// `root` on Windows while passing a component-wise `starts_with` check.
+fn safe_join(root: &Path, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('\0') {
+        return None;
+    }
+
+    let mut out = root.to_path_buf();
+    let mut pushed = false;
+    for component in name
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+    {
+        if component == ".." {
+            return None;
+        }
+        // Reject anything Windows would reinterpret: drive-relative prefixes, and trailing
+        // dots or spaces which the Win32 layer silently strips.
+        if component.contains(':') || component.ends_with('.') || component.ends_with(' ') {
+            return None;
+        }
+        out.push(component);
+        pushed = true;
+    }
+
+    if !pushed || !out.starts_with(root) {
+        return None;
+    }
+    Some(out)
+}
+
+/// Start the bundled Node.js app. On Unix this *replaces* the current process, so it only
+/// returns if Node could not be started at all.
+fn run_app(app_dir: &Path, main_script: &str, args: &[std::ffi::OsString]) -> Result<()> {
     let app_path = app_dir.join("app");
     let node_executable = get_node_executable_path(app_dir);
 
-    // Verify Node.js executable exists and is accessible
-    if !node_executable.exists() {
-        let app_dir_contents = fs::read_dir(&app_dir)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|e| vec![format!("Error reading app dir: {}", e)]);
+    // Returning from here leaves the caller free to wipe and re-extract `app_dir`, so the
+    // process must not be left with its cwd inside that directory.
+    let previous_cwd = env::current_dir().ok();
+    let restore_cwd = || {
+        if let Some(cwd) = previous_cwd.as_ref() {
+            let _ = env::set_current_dir(cwd);
+        }
+    };
 
-        let node_dir_contents = fs::read_dir(app_dir.join("node"))
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|e| vec![format!("Error reading node dir: {}", e)]);
-
-        return Err(anyhow::anyhow!(
-            "Node.js executable not found at: {}\nPlatform: {} {}\nApp directory contents: {:?}\nNode directory contents: {:?}",
-            node_executable.display(),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            app_dir_contents,
-            node_dir_contents
-        ));
+    if env::set_current_dir(&app_path).is_err() {
+        return Ok(());
     }
 
-    // On Windows, verify the executable is actually executable
+    let mut command = Command::new(&node_executable);
+    command.arg(main_script).args(args);
+
+    // Persist V8's compiled bytecode next to the extracted app so it survives between runs.
+    // This is what closes the gap with bundlers that ship precompiled bytecode: without it
+    // every launch recompiles the app's JavaScript, and the cost grows with dependency
+    // count. Node < 22.1 simply ignores the variable, and a caller that sets it explicitly
+    // keeps their own choice.
+    if env::var_os("NODE_COMPILE_CACHE").is_none() {
+        command.env("NODE_COMPILE_CACHE", app_dir.join(".v8cache"));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Replaces this process image with Node: no fork, no resident parent holding the
+        // launcher's address space for the lifetime of the app, and signals/exit status are
+        // delivered by the kernel directly to Node.
+        let err = command.exec();
+        // exec() only returns on failure.
+        restore_cwd();
+        if node_executable.exists() {
+            return Err(anyhow::anyhow!(err).context(format!(
+                "Failed to execute Node.js at {}",
+                node_executable.display()
+            )));
+        }
+        return Ok(());
+    }
+
     #[cfg(windows)]
     {
-        if let Ok(metadata) = fs::metadata(&node_executable) {
-            if !metadata.is_file() {
-                return Err(anyhow::anyhow!(
-                    "Node.js executable path exists but is not a file: {}",
+        use std::process::Stdio;
+        let mut last_err: Option<std::io::Error> = None;
+        for attempt in 1..=8u32 {
+            match command
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+            {
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                }
+            }
+        }
+        restore_cwd();
+        if node_executable.exists() {
+            if let Some(e) = last_err {
+                return Err(anyhow::anyhow!(e).context(format!(
+                    "Failed to execute Node.js at {}",
                     node_executable.display()
-                ));
-            }
-        } else {
-            return Err(anyhow::anyhow!(
-                "Cannot read metadata for Node.js executable: {}",
-                node_executable.display()
-            ));
-        }
-    }
-
-    // Verify app directory exists
-    if !app_path.exists() {
-        return Err(anyhow::anyhow!(
-            "App directory not found at: {}",
-            app_path.display()
-        ));
-    }
-
-    // Change to app directory
-    env::set_current_dir(&app_path)
-        .with_context(|| format!("Failed to change to app directory: {}", app_path.display()))?;
-
-    // Find main script from package.json
-    let main_script = find_main_script(&app_path)?;
-
-    // Build command arguments
-    let mut cmd_args = vec![main_script.clone()];
-    cmd_args.extend(args.iter().cloned());
-
-    let mut last_err: Option<anyhow::Error> = None;
-    let max_attempts: u32 = 8;
-    let mut status: Option<std::process::ExitStatus> = None;
-    for attempt in 1..=max_attempts {
-        let status_res = Command::new(&node_executable)
-            .args(&cmd_args)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
-        match status_res {
-            Ok(s) => {
-                status = Some(s);
-                break;
-            }
-            Err(e) => {
-                last_err = Some(anyhow::anyhow!(e).context(format!(
-                    "Failed to execute Node.js application (attempt {attempt}/{max_attempts})\nExecutable: {}\nMain script: {}\nArgs: {:?}\nWorking directory: {}",
-                    node_executable.display(),
-                    main_script,
-                    cmd_args,
-                    app_path.display()
                 )));
-                #[cfg(windows)]
-                {
-                    use std::time::Duration;
-                    std::thread::sleep(Duration::from_millis(50 * attempt as u64));
-                }
-                #[cfg(not(windows))]
-                {
-                    if attempt >= 2 {
-                        break;
-                    }
-                }
             }
         }
+        Ok(())
     }
-    let status = status.ok_or_else(|| {
-        last_err.unwrap_or_else(|| {
-            anyhow::anyhow!(
-                "Failed to execute Node.js application after {} attempts",
-                max_attempts
-            )
-        })
-    })?;
-
-    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn find_main_script(app_path: &Path) -> Result<String> {
     let package_json_path = app_path.join("package.json");
 
-    if package_json_path.exists() {
-        let package_content =
-            fs::read_to_string(&package_json_path).context("Failed to read package.json")?;
-
-        if let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&package_content) {
+    if let Ok(content) = fs::read_to_string(&package_json_path) {
+        if let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(main) = package_json["main"].as_str() {
-                return Ok(main.to_string());
+                if !main.trim().is_empty() {
+                    return Ok(main.to_string());
+                }
             }
         }
     }
 
-    // Default to index.js
     Ok("index.js".to_string())
 }

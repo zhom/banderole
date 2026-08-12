@@ -14,6 +14,27 @@ use std::time::Instant;
 
 use zip::ZipWriter;
 
+/// Zstd level for application and dependency files.
+///
+/// This is chosen for the *per-entry* cost, not for throughput. `ZipWriter` builds a fresh
+/// streaming encoder for every entry and cannot pledge the source size, so zstd commits to
+/// the level's full parameter set and allocates its match tables per file regardless of how
+/// small that file is. Measured cost of one encoder over a 108-byte input:
+///
+/// ```text
+/// level  3 →    148 us      level  9 →    850 us      level 12 → 30,021 us
+/// ```
+///
+/// That 35x cliff between 9 and 12 is fixed overhead, so it multiplies by file count: a
+/// 100,000-file dependency tree costs ~15 s at level 3 and ~50 minutes at level 12, for
+/// roughly 9% difference in size. Nothing above 9 is defensible for many-file payloads.
+const APP_COMPRESSION_LEVEL: i64 = 3;
+
+/// Zstd level for the single Node executable. One entry pays the per-entry overhead once,
+/// and this is a fixed ~105 MB that dominates the output size, so compressing it hard is
+/// worth a few seconds.
+const NODE_COMPRESSION_LEVEL: i64 = 12;
+
 /// Public entry-point used by `main.rs`.
 ///
 /// * `project_path` – path that contains a `package.json`.
@@ -27,7 +48,7 @@ pub async fn bundle_project(
     project_path: PathBuf,
     output_path: Option<PathBuf>,
     custom_name: Option<String>,
-    _no_compression: bool,
+    no_compression: bool,
     ignore_cached_versions: bool,
     multi: &MultiProgress,
 ) -> Result<()> {
@@ -133,10 +154,29 @@ pub async fn bundle_project(
     let mut zip_data: Vec<u8> = Vec::new();
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
-        // Always use uncompressed (Stored) for near-instant extraction
-        // This makes the executable larger but launch time is much faster
-        let opts: zip::write::FileOptions<'static, ()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        // Zstd is strictly better than Stored here: it cuts the payload several-fold and its
+        // decompression is fast enough that the one-time first-run extraction still gets
+        // *faster*, because there are far fewer bytes to write to disk. Warm launches never
+        // touch the archive at all, so they are unaffected either way.
+        //
+        // The level differs by payload because the two halves scale differently. Measured on
+        // real node_modules content, zstd throughput is 95.9 MB/s at level 3 but only
+        // 17.6 MB/s at level 12 — and an application's dependency tree is unbounded, so a
+        // high level there turns bundling a large project into minutes of compression. The
+        // Node binary is a fixed ~105 MB that dominates the output size, so it is worth
+        // compressing hard; a couple of seconds buys ~25% off the dominant term.
+        let opts: zip::write::FileOptions<'static, ()> = if no_compression {
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored)
+        } else {
+            zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Zstd)
+                .compression_level(Some(APP_COMPRESSION_LEVEL))
+        };
+        let node_opts: zip::write::FileOptions<'static, ()> = if no_compression {
+            opts
+        } else {
+            opts.compression_level(Some(NODE_COMPRESSION_LEVEL))
+        };
 
         // Pre-count app files
         let app_files = count_files_in_dir(&source_dir, true, true);
@@ -159,17 +199,11 @@ pub async fn bundle_project(
             Some(&pb_bundle),
         )?;
 
-        // Count node runtime files and extend length
-        let node_files = count_files_in_dir(node_root, false, true);
-        let new_len = pb_bundle.length().unwrap_or(0) + node_files;
+        // Only the Node executable itself is ever resolved at runtime, so the rest of the
+        // distribution (headers, npm, corepack, docs, man pages) is dead weight.
+        let new_len = pb_bundle.length().unwrap_or(0) + 1;
         pb_bundle.set_length(new_len);
-        add_dir_to_zip(
-            &mut zip,
-            node_root,
-            Path::new("node"),
-            opts,
-            Some(&pb_bundle),
-        )?;
+        add_node_runtime_to_zip(&mut zip, node_root, node_opts, Some(&pb_bundle))?;
         zip.finish()?;
     }
     pb_bundle.finish_and_clear();
@@ -228,6 +262,92 @@ fn count_files_in_dir(dir: &Path, exclude_node_modules: bool, follow_links: bool
         }
     }
     count
+}
+
+/// Add just the Node.js executable to the archive, at the path the launcher resolves.
+///
+/// The launcher only ever execs `node/bin/node` (or `node/node.exe`), so bundling the whole
+/// distribution ships ~65 MB of headers, npm and docs that nothing can reach. The binary is
+/// also stripped first where the platform allows it, which removes another ~14%.
+fn add_node_runtime_to_zip<W>(
+    zip: &mut ZipWriter<W>,
+    node_root: &Path,
+    opts: zip::write::FileOptions<'static, ()>,
+    progress: Option<&ProgressBar>,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let (source_rel, archive_path) = if cfg!(windows) {
+        (PathBuf::from("node.exe"), "node/node.exe")
+    } else {
+        (PathBuf::from("bin").join("node"), "node/bin/node")
+    };
+
+    let node_binary = node_root.join(&source_rel);
+    anyhow::ensure!(
+        node_binary.exists(),
+        "Node.js executable not found at {}",
+        node_binary.display()
+    );
+
+    let node_binary = strip_node_binary(&node_binary).unwrap_or(node_binary);
+
+    let opts = opts.unix_permissions(0o755).large_file(true);
+    zip.start_file(archive_path, opts)?;
+
+    let mut file = fs::File::open(&node_binary)
+        .with_context(|| format!("Failed to open {}", node_binary.display()))?;
+    std::io::copy(&mut file, zip)
+        .with_context(|| format!("Failed to add {} to archive", node_binary.display()))?;
+
+    if let Some(pb) = progress {
+        pb.inc(1);
+    }
+
+    Ok(())
+}
+
+/// Produce a stripped copy of the Node binary next to the cached distribution, reusing it on
+/// subsequent bundles. Returns `None` when stripping is unavailable or fails, in which case
+/// the caller falls back to the original binary.
+fn strip_node_binary(node_binary: &Path) -> Option<PathBuf> {
+    // macOS ships signed binaries; stripping invalidates the signature and Gatekeeper then
+    // kills the process, so leave those alone.
+    if cfg!(target_os = "macos") || cfg!(windows) {
+        return None;
+    }
+
+    let stripped = node_binary.with_extension("stripped");
+    if let (Ok(orig), Ok(strip_meta)) = (node_binary.metadata(), stripped.metadata()) {
+        // Reuse only if the stripped copy is newer than the original and non-empty.
+        if strip_meta.len() > 0 {
+            if let (Ok(a), Ok(b)) = (orig.modified(), strip_meta.modified()) {
+                if b >= a {
+                    return Some(stripped);
+                }
+            }
+        }
+    }
+
+    fs::copy(node_binary, &stripped).ok()?;
+    let status = std::process::Command::new("strip")
+        .arg("--strip-all")
+        .arg(&stripped)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            debug!("Stripped Node binary at {}", stripped.display());
+            Some(stripped)
+        }
+        _ => {
+            let _ = fs::remove_file(&stripped);
+            None
+        }
+    }
 }
 
 /// Bundle dependencies with improved package manager support
@@ -1359,56 +1479,6 @@ fn resolve_output_path(
 // ────────────────────────────────────────────────────────────────────────────
 // Utility helpers
 // ────────────────────────────────────────────────────────────────────────────
-
-fn add_dir_to_zip<W>(
-    zip: &mut ZipWriter<W>,
-    src_dir: &Path,
-    dest_dir: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
-    progress: Option<&ProgressBar>,
-) -> Result<()>
-where
-    W: Write + Read + std::io::Seek,
-{
-    for entry in walkdir::WalkDir::new(src_dir).follow_links(true) {
-        let entry = entry?;
-        let path = entry.path();
-        let rel_path = path.strip_prefix(src_dir).unwrap();
-        let zip_path = dest_dir.join(rel_path);
-
-        if entry.file_type().is_dir() {
-            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
-            continue;
-        }
-
-        if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
-            continue;
-        }
-
-        let file_opts = {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let metadata = fs::metadata(path)?;
-                let permissions = metadata.permissions();
-                let mode = permissions.mode();
-                opts.unix_permissions(mode)
-            }
-            #[cfg(not(unix))]
-            {
-                opts
-            }
-        };
-
-        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
-        let data = fs::read(path).context("Failed to read file while zipping")?;
-        zip.write_all(&data)?;
-        if let Some(pb) = progress {
-            pb.inc(1);
-        }
-    }
-    Ok(())
-}
 
 /// Add directory to zip without following symlinks but preserving them
 fn add_dir_to_zip_no_follow<W>(

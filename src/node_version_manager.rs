@@ -1,13 +1,11 @@
 use anyhow::{Context, Result};
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use tokio::time::{Duration, Instant};
 
-lazy_static! {
-    static ref VERSION_CACHE: Mutex<VersionCache> = Mutex::new(VersionCache::new());
-}
+static VERSION_CACHE: LazyLock<Mutex<VersionCache>> =
+    LazyLock::new(|| Mutex::new(VersionCache::new()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeVersion {
