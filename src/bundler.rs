@@ -42,8 +42,6 @@ const NODE_COMPRESSION_LEVEL: i64 = 12;
 ///   automatically-generated name is used.
 /// * `custom_name` – optional custom name for the executable.
 /// * `no_compression` – disable compression for faster bundling (useful for testing).
-///
-/// The implementation uses a simpler, more reliable approach based on Playwright's bundling strategy.
 pub async fn bundle_project(
     project_path: PathBuf,
     output_path: Option<PathBuf>,
@@ -165,14 +163,14 @@ pub async fn bundle_project(
         // high level there turns bundling a large project into minutes of compression. The
         // Node binary is a fixed ~105 MB that dominates the output size, so it is worth
         // compressing hard; a couple of seconds buys ~25% off the dominant term.
-        let opts: zip::write::FileOptions<'static, ()> = if no_compression {
+        let opts: zip::write::SimpleFileOptions = if no_compression {
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored)
         } else {
             zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Zstd)
                 .compression_level(Some(APP_COMPRESSION_LEVEL))
         };
-        let node_opts: zip::write::FileOptions<'static, ()> = if no_compression {
+        let node_opts: zip::write::SimpleFileOptions = if no_compression {
             opts
         } else {
             opts.compression_level(Some(NODE_COMPRESSION_LEVEL))
@@ -272,7 +270,7 @@ fn count_files_in_dir(dir: &Path, exclude_node_modules: bool, follow_links: bool
 fn add_node_runtime_to_zip<W>(
     zip: &mut ZipWriter<W>,
     node_root: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -356,7 +354,7 @@ fn bundle_dependencies<W>(
     project_path: &Path,
     source_dir: &Path,
     _package_value: &Value,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -411,7 +409,7 @@ struct DependenciesResult {
 fn find_and_bundle_dependencies<W>(
     zip: &mut ZipWriter<W>,
     project_path: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<DependenciesResult>
 where
@@ -429,7 +427,7 @@ where
                 entries.flatten().any(|entry| {
                     if entry.file_type().ok().is_some_and(|ft| ft.is_symlink()) {
                         if let Ok(target) = fs::read_link(entry.path()) {
-                            let target_str = target.to_string_lossy();
+                            let target_str = target.to_string_lossy().replace('\\', "/");
                             target_str.contains("/.pnpm/") && target_str.starts_with("../")
                         } else {
                             false
@@ -590,7 +588,7 @@ fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> Pack
             for entry in entries.flatten() {
                 if entry.file_type().ok().is_some_and(|ft| ft.is_symlink()) {
                     if let Ok(target) = fs::read_link(entry.path()) {
-                        let target_str = target.to_string_lossy();
+                        let target_str = target.to_string_lossy().replace('\\', "/");
                         if target_str.contains("/.pnpm/") {
                             return PackageManager::Pnpm;
                         }
@@ -619,7 +617,7 @@ fn detect_package_manager(node_modules_path: &Path, project_path: &Path) -> Pack
 fn bundle_pnpm_dependencies<W>(
     zip: &mut ZipWriter<W>,
     project_path: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -711,7 +709,7 @@ where
         let file_path = node_modules_path.join(file_name);
         if file_path.exists() {
             let dest_path = Path::new("app/node_modules").join(file_name);
-            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            zip.start_file(zip_entry_name(&dest_path), opts)?;
             let data = fs::read(&file_path)?;
             zip.write_all(&data)?;
         }
@@ -882,7 +880,7 @@ fn copy_pnpm_package_comprehensive<W>(
     node_modules_path: &Path,
     pnpm_dir: &Path,
     package_name: &str,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -951,7 +949,7 @@ fn bundle_node_modules_comprehensive<W>(
     zip: &mut ZipWriter<W>,
     node_modules_path: &Path,
     project_path: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1058,7 +1056,7 @@ where
         let file_path = node_modules_path.join(file_name);
         if file_path.exists() {
             let dest_path = Path::new("app/node_modules").join(file_name);
-            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            zip.start_file(zip_entry_name(&dest_path), opts)?;
             let data = fs::read(&file_path)?;
             zip.write_all(&data)?;
             if let Some(pb) = progress {
@@ -1076,7 +1074,7 @@ fn bundle_workspace_dependencies<W>(
     node_modules_path: &Path,
     _parent_path: &Path,
     project_path: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1148,7 +1146,7 @@ where
         let file_path = node_modules_path.join(file_name);
         if file_path.exists() {
             let dest_path = Path::new("app/node_modules").join(file_name);
-            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            zip.start_file(zip_entry_name(&dest_path), opts)?;
             let data = fs::read(&file_path)?;
             zip.write_all(&data)?;
             if let Some(pb) = progress {
@@ -1165,7 +1163,7 @@ fn bundle_pnpm_workspace_dependencies<W>(
     zip: &mut ZipWriter<W>,
     parent_path: &Path,
     project_path: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1245,7 +1243,7 @@ where
         let file_path = parent_path.join("node_modules").join(file_name);
         if file_path.exists() {
             let dest_path = Path::new("app/node_modules").join(file_name);
-            zip.start_file(dest_path.to_string_lossy().as_ref(), opts)?;
+            zip.start_file(zip_entry_name(&dest_path), opts)?;
             let data = fs::read(&file_path)?;
             zip.write_all(&data)?;
             if let Some(pb) = progress {
@@ -1480,12 +1478,72 @@ fn resolve_output_path(
 // Utility helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Add directory to zip without following symlinks but preserving them
+/// Archive entry name for a relative path. Zip names always use `/`, whatever the host
+/// separator is, so a bundle made on Windows extracts the same way as one made elsewhere.
+fn zip_entry_name(path: &Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Add what a symlink points at under the link's own archive path.
+///
+/// The launcher extracts plain files only. If the link itself went into the archive, the
+/// extracted bundle would have a small text file with the target path where a module or a
+/// package directory should be. Links on Windows are often junctions, which this handles too.
+fn add_symlink_target_to_zip<W>(
+    zip: &mut ZipWriter<W>,
+    link: &Path,
+    zip_path: &Path,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<()>
+where
+    W: Write + Read + std::io::Seek,
+{
+    let Ok(meta) = fs::metadata(link) else {
+        debug!("Skipping broken symlink {}", link.display());
+        return Ok(());
+    };
+
+    let add_file = |zip: &mut ZipWriter<W>, src: &Path, dest: &Path| -> Result<()> {
+        #[cfg(unix)]
+        let opts = {
+            use std::os::unix::fs::PermissionsExt;
+            opts.unix_permissions(fs::metadata(src)?.permissions().mode())
+        };
+        zip.start_file(zip_entry_name(dest), opts)?;
+        let data = fs::read(src)
+            .with_context(|| format!("Failed to read {} while zipping", src.display()))?;
+        zip.write_all(&data)?;
+        Ok(())
+    };
+
+    if meta.is_file() {
+        return add_file(zip, link, zip_path);
+    }
+
+    // A link loop makes walkdir return an error for that entry; skip it, as a broken link.
+    for entry in walkdir::WalkDir::new(link)
+        .follow_links(true)
+        .into_iter()
+        .flatten()
+    {
+        if entry.file_type().is_file() {
+            let rel = entry.path().strip_prefix(link).unwrap_or(entry.path());
+            add_file(zip, entry.path(), &zip_path.join(rel))?;
+        }
+    }
+    Ok(())
+}
+
+/// Add directory to zip. Symlinks are not followed during the walk; their targets are stored
+/// under the link's path instead.
 fn add_dir_to_zip_no_follow<W>(
     zip: &mut ZipWriter<W>,
     src_dir: &Path,
     dest_dir: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1498,7 +1556,7 @@ where
         let zip_path = dest_dir.join(rel_path);
 
         if entry.file_type().is_dir() {
-            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            zip.add_directory(zip_entry_name(&zip_path), opts)?;
             continue;
         }
 
@@ -1521,14 +1579,10 @@ where
             }
         };
 
-        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
-
         if entry.file_type().is_symlink() {
-            if let Ok(target) = fs::read_link(path) {
-                let target_str = target.to_string_lossy();
-                zip.write_all(target_str.as_bytes())?;
-            }
+            add_symlink_target_to_zip(zip, path, &zip_path, opts)?;
         } else {
+            zip.start_file(zip_entry_name(&zip_path), file_opts)?;
             let data = fs::read(path).context("Failed to read file while zipping")?;
             zip.write_all(&data)?;
         }
@@ -1544,7 +1598,7 @@ fn add_dir_to_zip_no_follow_skip_parents<W>(
     zip: &mut ZipWriter<W>,
     src_dir: &Path,
     dest_dir: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1558,7 +1612,7 @@ where
 
         if entry.file_type().is_dir() {
             if !rel_path.as_os_str().is_empty() {
-                zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+                zip.add_directory(zip_entry_name(&zip_path), opts)?;
             }
             continue;
         }
@@ -1582,14 +1636,10 @@ where
             }
         };
 
-        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
-
         if entry.file_type().is_symlink() {
-            if let Ok(target) = fs::read_link(path) {
-                let target_str = target.to_string_lossy();
-                zip.write_all(target_str.as_bytes())?;
-            }
+            add_symlink_target_to_zip(zip, path, &zip_path, opts)?;
         } else {
+            zip.start_file(zip_entry_name(&zip_path), file_opts)?;
             let data = fs::read(path).context("Failed to read file while zipping")?;
             zip.write_all(&data)?;
         }
@@ -1605,7 +1655,7 @@ fn add_dir_to_zip_excluding_node_modules<W>(
     zip: &mut ZipWriter<W>,
     src_dir: &Path,
     dest_dir: &Path,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where
@@ -1622,7 +1672,7 @@ where
         }
 
         if entry.file_type().is_dir() {
-            zip.add_directory(zip_path.to_string_lossy().as_ref(), opts)?;
+            zip.add_directory(zip_entry_name(&zip_path), opts)?;
             continue;
         }
 
@@ -1645,7 +1695,7 @@ where
             }
         };
 
-        zip.start_file(zip_path.to_string_lossy().as_ref(), file_opts)?;
+        zip.start_file(zip_entry_name(&zip_path), file_opts)?;
         let data = fs::read(path).context("Failed to read file while zipping")?;
         zip.write_all(&data)?;
         if let Some(pb) = progress {
@@ -1660,7 +1710,7 @@ fn copy_workspace_package<W>(
     zip: &mut ZipWriter<W>,
     node_modules_path: &Path,
     package_name: &str,
-    opts: zip::write::FileOptions<'static, ()>,
+    opts: zip::write::SimpleFileOptions,
     progress: Option<&ProgressBar>,
 ) -> Result<()>
 where

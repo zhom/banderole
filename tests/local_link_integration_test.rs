@@ -103,26 +103,7 @@ fn prepare_node_modules_for_spec(app_dir: &Path, local_pkg_dir: &Path, mode: &st
 }
 
 fn bundle_app(app_dir: &Path, out_dir: &Path, name: &str) -> PathBuf {
-    // Build banderole if needed
-    let bundler = {
-        let target_dir = std::env::current_dir().unwrap().join("target");
-        let path = if cfg!(windows) {
-            target_dir.join("debug/banderole.exe")
-        } else {
-            target_dir.join("debug/banderole")
-        };
-        if !path.exists() {
-            let out = Command::new("cargo").args(["build"]).output().unwrap();
-            assert!(
-                out.status.success(),
-                "Failed to build banderole: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        path
-    };
-
-    let output = Command::new(&bundler)
+    let output = Command::new(env!("CARGO_BIN_EXE_banderole"))
         .args([
             "bundle",
             app_dir.to_str().unwrap(),

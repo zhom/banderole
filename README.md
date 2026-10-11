@@ -1,6 +1,6 @@
 # Banderole
 
-Create cross-platform single-executables for Node.js projects. Windows is not supported.
+Create cross-platform single-executables for Node.js projects on Linux, macOS and Windows (x64 and arm64).
 
 Banderole bundles your Node.js app, all dependencies, and a portable Node binary into a single native executable. On first launch, it unpacks to a cache directory for fast subsequent executions.
 

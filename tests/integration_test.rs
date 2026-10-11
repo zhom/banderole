@@ -77,28 +77,12 @@ process.exit(0);"#;
         );
     }
 
-    // Build banderole if not already built
-    println!("Building banderole...");
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the test app)
     println!("Bundling test app...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -233,26 +217,11 @@ process.exit(0);"#;
     std::fs::write(test_app_path.join("index.js"), index_js).unwrap();
     std::fs::write(test_app_path.join(".nvmrc"), nvmrc).unwrap();
 
-    // Build banderole
-    println!("Building banderole for Node version test...");
-    let output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build banderole");
-
-    assert!(
-        output.status.success(),
-        "Failed to build banderole: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let banderole_path = std::env::current_dir()
-        .unwrap()
-        .join("target/release/banderole");
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the test app (keep compression for this test to verify it works)
     println!("Bundling test app with .nvmrc...");
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args(["bundle", test_app_path.to_str().unwrap()])
         .current_dir(temp_dir.path());
@@ -368,27 +337,12 @@ async fn test_output_path_collision_handling() -> Result<(), Box<dyn std::error:
     // Create a directory with the same name as the app to cause collision
     std::fs::create_dir_all(temp_dir.path().join("collision-test-app"))?;
 
-    // Build banderole
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the test app)
     println!("Testing output path collision handling...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -506,27 +460,12 @@ try {
     std::fs::write(test_app_path.join("dist/index.js"), dist_index_js)?;
     std::fs::write(test_app_path.join("dist/marker.js"), dist_marker)?;
 
-    // Build banderole
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the TypeScript project)
     println!("Testing TypeScript project bundling...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -654,27 +593,12 @@ try {
     std::fs::write(test_app_path.join("build/index.js"), build_index_js)?;
     std::fs::write(test_app_path.join("build/marker.js"), build_marker)?;
 
-    // Build banderole
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the project)
     println!("Testing TypeScript project with custom outDir...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -801,27 +725,12 @@ try {
     std::fs::write(test_app_path.join("lib/index.js"), lib_index_js)?;
     std::fs::write(test_app_path.join("lib/marker.js"), lib_marker)?;
 
-    // Build banderole
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the project)
     println!("Testing TypeScript project with extends...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -1035,27 +944,12 @@ packages:
         }
     }
 
-    // Build banderole
-    let target_dir = std::env::current_dir()?.join("target");
-    let banderole_path = target_dir.join("debug/banderole");
-
-    if !banderole_path.exists() {
-        let output = Command::new("cargo")
-            .args(["build"])
-            .output()
-            .expect("Failed to build banderole");
-
-        assert!(
-            output.status.success(),
-            "Failed to build banderole: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let banderole_path = env!("CARGO_BIN_EXE_banderole");
 
     // Bundle the pnpm project)
     println!("Testing pnpm dependency bundling...");
 
-    let mut bundle_cmd = Command::new(&banderole_path);
+    let mut bundle_cmd = Command::new(banderole_path);
     bundle_cmd
         .args([
             "bundle",
@@ -1235,8 +1129,10 @@ async fn test_bundle_simple_project() {
         String::from_utf8_lossy(&bundle_output.stderr)
     );
 
-    // Test that the bundle exists
-    let bundle_path = temp_dir.path().join("test-bundle");
+    // Test that the bundle exists (the bundler adds `.exe` on Windows)
+    let bundle_path = temp_dir
+        .path()
+        .join(format!("test-bundle{}", std::env::consts::EXE_SUFFIX));
     assert!(bundle_path.exists(), "Bundle file not created");
 }
 

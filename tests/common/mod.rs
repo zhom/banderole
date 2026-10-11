@@ -7,6 +7,20 @@ use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
 
+/// Build a command for a Node package manager (`npm`, `pnpm`, ...).
+///
+/// On Windows these are `.cmd` shims, which `Command::new` does not find by bare name, so
+/// they go through `cmd /C`.
+pub fn package_manager_command(program: &str) -> Command {
+    if cfg!(windows) {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", program]);
+        cmd
+    } else {
+        Command::new(program)
+    }
+}
+
 /// Represents different project types for testing
 #[derive(Debug, Clone)]
 pub enum ProjectType {
@@ -146,7 +160,7 @@ impl TestProjectManager {
 
     /// Install dependencies using npm
     pub fn install_dependencies(&self) -> Result<()> {
-        let npm_install = Command::new("npm")
+        let npm_install = package_manager_command("npm")
             .args(["install"])
             .current_dir(&self.project_path)
             .output()?;
@@ -164,7 +178,7 @@ impl TestProjectManager {
     /// Install dependencies using pnpm
     pub fn install_pnpm_dependencies(&self) -> Result<()> {
         // First try pnpm
-        let pnpm_install = Command::new("pnpm")
+        let pnpm_install = package_manager_command("pnpm")
             .args(["install"])
             .current_dir(self.workspace_root.as_ref().unwrap_or(&self.project_path))
             .output();
@@ -188,7 +202,7 @@ impl TestProjectManager {
     /// Install dependencies in workspace root
     pub fn install_workspace_dependencies(&self) -> Result<()> {
         if let Some(workspace_root) = &self.workspace_root {
-            let npm_install = Command::new("npm")
+            let npm_install = package_manager_command("npm")
                 .args(["install"])
                 .current_dir(workspace_root)
                 .output()?;
@@ -494,27 +508,8 @@ pub struct BundlerTestHelper;
 impl BundlerTestHelper {
     /// Get the path to the banderole binary
     pub fn get_bundler_path() -> Result<PathBuf> {
-        let target_dir = std::env::current_dir()?.join("target");
-        let bundler_path = if cfg!(windows) {
-            target_dir.join("debug/banderole.exe")
-        } else {
-            target_dir.join("debug/banderole")
-        };
-
-        if !bundler_path.exists() {
-            // Build the bundler if it doesn't exist
-            println!("Building banderole...");
-            let output = Command::new("cargo").args(["build"]).output()?;
-
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to build banderole: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        }
-
-        Ok(bundler_path)
+        // Cargo builds the binary before it runs integration tests and reports its path.
+        Ok(PathBuf::from(env!("CARGO_BIN_EXE_banderole")))
     }
 
     /// Bundle a project and return the path to the created executable
@@ -697,123 +692,26 @@ impl BundlerTestHelper {
             fs::set_permissions(executable_path, perms)?;
         }
 
-        // Build command to run the executable.
-        #[cfg(windows)]
-        let (exec_to_run, work_dir, _run_guard) = {
-            // Copy to a unique name in the same directory as the original to avoid policy issues with %TEMP%
-            let parent = executable_path.parent().ok_or_else(|| {
-                anyhow::anyhow!("Executable has no parent: {}", executable_path.display())
-            })?;
-            let run_dir = TempDir::new_in(parent).unwrap_or_else(|_| TempDir::new().unwrap());
-            let mut base = executable_path
-                .file_name()
-                .map(|s| s.to_os_string())
-                .unwrap_or_else(|| "app.exe".into());
-            if Path::new(&base).extension().is_none() {
-                base.push(".exe");
-            }
-            let candidate = run_dir.path().join(&base);
-            std::fs::copy(executable_path, &candidate).with_context(|| {
-                format!(
-                    "Failed to copy executable to run dir: {} -> {}",
-                    executable_path.display(),
-                    candidate.display()
-                )
-            })?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if !candidate.exists() {
-                anyhow::bail!(
-                    "Run executable not found after copy: {}",
-                    candidate.display()
-                );
-            }
-            (candidate, parent.to_path_buf(), run_dir)
-        };
+        let work_dir = executable_path.parent().ok_or_else(|| {
+            anyhow::anyhow!("Executable has no parent: {}", executable_path.display())
+        })?;
 
-        #[cfg(not(windows))]
-        let (exec_to_run, work_dir) = (
-            executable_path.to_path_buf(),
-            executable_path.parent().unwrap().to_path_buf(),
+        println!(
+            "Executing: {} with args: {:?}",
+            executable_path.display(),
+            args
         );
 
-        println!("Executing: {} with args: {:?}", exec_to_run.display(), args);
+        let mut cmd = Command::new(executable_path);
+        cmd.args(args).current_dir(work_dir);
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
 
-        // Build a verbatim Windows path to avoid MAX_PATH and normalization issues
-        #[cfg(windows)]
-        let exec_for_spawn = {
-            use std::ffi::OsString;
-            let abs = exec_to_run
-                .canonicalize()
-                .unwrap_or_else(|_| exec_to_run.clone());
-            let mut s: OsString = OsString::from(r"\\?\");
-            s.push(&abs);
-            s
-        };
-        #[cfg(not(windows))]
-        let exec_for_spawn = exec_to_run.as_os_str().to_os_string();
-
-        // First try direct spawn
-        let direct = {
-            let mut cmd = Command::new(&exec_for_spawn);
-            cmd.args(args);
-            for (key, value) in env_vars {
-                cmd.env(key, value);
-            }
-            cmd.current_dir(&work_dir).output()
-        };
-
-        // If NotFound on Windows, retry using the copied executable directly with verbatim prefix; else cmd /C
-        #[cfg(windows)]
-        let output = match direct {
-            Ok(o) => Ok(o),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                use std::ffi::OsString;
-                let abs = exec_to_run
-                    .canonicalize()
-                    .unwrap_or_else(|_| exec_to_run.clone());
-                let mut verbatim: OsString = OsString::from(r"\\?\");
-                verbatim.push(&abs);
-                let mut cmd = Command::new(&verbatim);
-                cmd.args(args).current_dir(&work_dir);
-                for (key, value) in env_vars {
-                    cmd.env(key, value);
-                }
-                match cmd.output() {
-                    Ok(o2) => Ok(o2),
-                    Err(e2) if e2.kind() == std::io::ErrorKind::NotFound => {
-                        // Fallback to cmd /C with quoting
-                        fn quote(s: &str) -> String {
-                            let mut out = String::from("\"");
-                            out.push_str(&s.replace('"', "\\\""));
-                            out.push('"');
-                            out
-                        }
-                        let exe_str = exec_to_run.display().to_string();
-                        let mut cmdline = quote(&exe_str);
-                        for a in args {
-                            cmdline.push(' ');
-                            cmdline.push_str(&quote(a));
-                        }
-                        let mut c2 = Command::new("cmd");
-                        c2.args(["/C", &cmdline]).current_dir(&work_dir);
-                        for (key, value) in env_vars {
-                            c2.env(key, value);
-                        }
-                        c2.output()
-                    }
-                    Err(e2) => Err(e2),
-                }
-            }
-            Err(e) => Err(e),
-        };
-
-        #[cfg(not(windows))]
-        let output = direct;
-
-        let output = output.with_context(|| {
+        let output = cmd.output().with_context(|| {
             format!(
                 "Failed to execute command: {}\nArgs: {:?}\nEnv vars: {:?}\nWorking directory: {:?}",
-                exec_to_run.display(),
+                executable_path.display(),
                 args,
                 env_vars,
                 work_dir
@@ -864,17 +762,10 @@ pub struct TestCacheManager;
 impl TestCacheManager {
     /// The directory the launcher extracts bundles into, matching `directories::BaseDirs`.
     pub fn application_cache_dir() -> PathBuf {
-        if cfg!(windows) {
-            std::env::var_os("LOCALAPPDATA")
-                .map(|d| PathBuf::from(d).join("banderole"))
-                .unwrap_or_else(|| PathBuf::from("banderole-cache"))
-        } else if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME") {
-            PathBuf::from(xdg_cache).join("banderole")
-        } else if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".cache").join("banderole")
-        } else {
-            PathBuf::from("/tmp").join("banderole-cache")
-        }
+        directories::BaseDirs::new()
+            .expect("Failed to determine base directories")
+            .cache_dir()
+            .join("banderole")
     }
 
     /// Clear application cache for testing

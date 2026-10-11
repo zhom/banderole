@@ -70,7 +70,13 @@ fn main() -> Result<()> {
     if let Ok(main_script) = fs::read_to_string(&ready_path) {
         let main_script = main_script.trim().to_string();
         if !main_script.is_empty() {
+            // Without exec() the launcher waits for Node, so it must release the lock first.
+            // Otherwise every other launch would block until this app exits.
+            #[cfg(windows)]
+            FileExt::unlock(&lock_file).context("Failed to release extraction lock")?;
             run_app(&app_dir, &main_script, &args[1..])?;
+            #[cfg(windows)]
+            FileExt::lock(&lock_file).context("Failed to acquire extraction lock")?;
         }
     }
 
@@ -141,8 +147,9 @@ fn extract_application(app_dir: &Path) -> Result<()> {
             let entry = archive
                 .by_index_raw(index)
                 .context("Failed to read zip entry")?;
-            let is_dir = entry.is_dir() || entry.name().ends_with('/');
-            let Some(path) = safe_join(app_dir, entry.name()) else {
+            let name = entry.name().context("Failed to read zip entry name")?;
+            let is_dir = entry.is_dir() || name.ends_with('/');
+            let Some(path) = safe_join(app_dir, &name) else {
                 continue;
             };
             let size = entry.size();
@@ -184,7 +191,7 @@ fn extract_application(app_dir: &Path) -> Result<()> {
     // static split of the work list hands it to one worker that is still writing long after
     // the rest have finished. Longest-job-first plus a shared cursor keeps every core busy to
     // the end.
-    files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    files.sort_unstable_by_key(|f| std::cmp::Reverse(f.size));
 
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -328,7 +335,9 @@ fn run_app(app_dir: &Path, main_script: &str, args: &[std::ffi::OsString]) -> Re
         command.env("NODE_COMPILE_CACHE", app_dir.join(".v8cache"));
     }
 
+    // The early return is needed on Unix only because the Windows block follows it.
     #[cfg(unix)]
+    #[allow(clippy::needless_return)]
     {
         use std::os::unix::process::CommandExt;
         // Replaces this process image with Node: no fork, no resident parent holding the
@@ -348,16 +357,22 @@ fn run_app(app_dir: &Path, main_script: &str, args: &[std::ffi::OsString]) -> Re
 
     #[cfg(windows)]
     {
-        use std::process::Stdio;
+        // Windows has no exec(), so the launcher stays as Node's parent. It must not die
+        // before Node on Ctrl+C (the shell would get its prompt back while Node still
+        // writes to the console), and Node must not outlive a launcher that is killed.
+        windows_supervisor::ignore_console_interrupts();
+
         let mut last_err: Option<std::io::Error> = None;
         for attempt in 1..=8u32 {
-            match command
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
-            {
-                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            match command.spawn() {
+                Ok(mut child) => {
+                    windows_supervisor::kill_on_launcher_exit(&child);
+                    let code = match child.wait() {
+                        Ok(status) => status.code().unwrap_or(1),
+                        Err(_) => 1,
+                    };
+                    std::process::exit(code);
+                }
                 Err(e) => {
                     last_err = Some(e);
                     std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
@@ -374,6 +389,60 @@ fn run_app(app_dir: &Path, main_script: &str, args: &[std::ffi::OsString]) -> Re
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+mod windows_supervisor {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+    };
+
+    unsafe extern "system" fn on_console_event(event: u32) -> BOOL {
+        // Ctrl+C and Ctrl+Break go to every process on the console, so Node gets them too
+        // and decides how to exit. The launcher only waits and forwards the exit code.
+        (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) as BOOL
+    }
+
+    pub fn ignore_console_interrupts() {
+        // A handler routine, unlike `SetConsoleCtrlHandler(NULL, TRUE)`, is not inherited,
+        // so Node keeps the default Ctrl+C behaviour.
+        unsafe {
+            SetConsoleCtrlHandler(Some(on_console_event), 1);
+        }
+    }
+
+    /// Put Node in a job that is closed, and so terminated, when the launcher exits for any
+    /// reason. Processes that Node starts are not added to the job, so detached children
+    /// still outlive the app. Failures are ignored: the app then runs as before.
+    pub fn kill_on_launcher_exit(child: &std::process::Child) {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return;
+            }
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+            let configured = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if configured != 0 {
+                AssignProcessToJobObject(job, child.as_raw_handle() as _);
+            }
+            // The job handle stays open on purpose. The system closes it when the launcher
+            // exits, and that terminates Node.
+        }
     }
 }
 

@@ -8,7 +8,6 @@ use common::{BundlerTestHelper, TestCacheManager};
 use serial_test::serial;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tempfile::TempDir;
 
 /// Writes a project whose entrypoint can exit with a chosen code or idle forever.
@@ -103,7 +102,7 @@ async fn test_launcher_execs_into_node() -> Result<(), Box<dyn std::error::Error
 #[serial]
 async fn test_no_launcher_process_remains_resident() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
-    use std::process::Stdio;
+    use std::process::{Command, Stdio};
 
     let temp_dir = TempDir::new()?;
     let app = write_probe_project(temp_dir.path())?;
@@ -212,6 +211,57 @@ async fn test_payload_contains_only_node_executable() -> Result<(), Box<dyn std:
     assert!(
         !node_dir.join("lib").join("node_modules").exists(),
         "extracted bundle still ships npm/corepack under node/lib/node_modules"
+    );
+
+    Ok(())
+}
+
+/// Windows has no exec(), so the launcher stays as Node's parent. When the launcher is
+/// killed, Node must stop too, or it keeps the extracted files in use and runs unattended.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn test_node_stops_when_launcher_is_killed() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = TempDir::new()?;
+    let app = write_probe_project(temp_dir.path())?;
+    let out_dir = temp_dir.path().join("out");
+    fs::create_dir_all(&out_dir)?;
+
+    TestCacheManager::clear_application_cache()?;
+    let exe = BundlerTestHelper::bundle_project(&app, &out_dir, Some("probe-app"))?;
+    BundlerTestHelper::run_executable(&exe, &[], &[])?;
+
+    let mut child = Command::new(&exe)
+        .arg("idle")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut buf = [0u8; 32];
+    let n = stdout.read(&mut buf)?;
+    assert!(
+        String::from_utf8_lossy(&buf[..n]).contains("ready"),
+        "idle app never became ready"
+    );
+
+    // Node holds the write end of the pipe too, so the read only ends when Node has exited.
+    child.kill()?;
+    child.wait()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut rest = Vec::new();
+        let _ = stdout.read_to_end(&mut rest);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_secs(15)).is_ok(),
+        "Node kept running after the launcher was killed"
     );
 
     Ok(())
