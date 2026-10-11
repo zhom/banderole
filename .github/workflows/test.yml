@@ -24,7 +24,7 @@ jobs:
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             name: Linux ARM64
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             name: macOS x64
           - os: macos-latest
@@ -41,22 +41,18 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b #master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f #master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Install dependencies (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config
-
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 #v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 #v7.1.0
+        with:
+          node-version: 22
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -75,9 +71,7 @@ jobs:
         run: cargo build --verbose
 
       - name: Run tests
-        run: |
-          cargo test --test integration_test -- --nocapture || true
-          cargo test --verbose
+        run: cargo test --no-fail-fast -- --nocapture
 
       - name: Build release
         run: cargo build --release --verbose
@@ -101,19 +95,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b #master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f #master
         with:
           toolchain: stable
           components: rustfmt, clippy
-
-      - name: Install dependencies (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -130,10 +118,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b #master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f #master
         with:
           toolchain: stable
 
@@ -159,10 +147,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install MSRV Rust toolchain
-        uses: dtolnay/rust-toolchain@1.82.0
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f #master
+        with:
+          toolchain: 1.93.1
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
