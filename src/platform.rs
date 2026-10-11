@@ -45,6 +45,24 @@ impl Platform {
         }
     }
 
+    /// The platform whose Node.js build to use for `version`.
+    ///
+    /// Official arm64 builds start with Node 20 on Windows and Node 16 on macOS. For older
+    /// versions this gives the x64 build, which Windows on ARM and Rosetta 2 run under
+    /// emulation. Without it, such a version fails with a download error.
+    pub fn node_build_platform(&self, version: &str) -> Platform {
+        let major = version
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .and_then(|m| m.parse::<u32>().ok());
+        match (self, major) {
+            (Platform::WindowsArm64, Some(major)) if major < 20 => Platform::WindowsX64,
+            (Platform::MacosArm64, Some(major)) if major < 16 => Platform::MacosX64,
+            _ => *self,
+        }
+    }
+
     pub fn is_windows(&self) -> bool {
         matches!(self, Platform::WindowsX64 | Platform::WindowsArm64)
     }
@@ -60,5 +78,34 @@ impl std::fmt::Display for Platform {
             Self::WindowsX64 => write!(f, "win32-x64"),
             Self::WindowsArm64 => write!(f, "win32-arm64"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Platform;
+
+    #[test]
+    fn test_node_build_platform_falls_back_to_x64() {
+        assert_eq!(
+            Platform::WindowsArm64.node_build_platform("18.17.0"),
+            Platform::WindowsX64
+        );
+        assert_eq!(
+            Platform::WindowsArm64.node_build_platform("22.17.1"),
+            Platform::WindowsArm64
+        );
+        assert_eq!(
+            Platform::MacosArm64.node_build_platform("14.21.3"),
+            Platform::MacosX64
+        );
+        assert_eq!(
+            Platform::MacosArm64.node_build_platform("18.17.0"),
+            Platform::MacosArm64
+        );
+        assert_eq!(
+            Platform::LinuxArm64.node_build_platform("14.21.3"),
+            Platform::LinuxArm64
+        );
     }
 }

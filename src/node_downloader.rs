@@ -37,8 +37,16 @@ impl NodeDownloader {
 
         info!("Resolved '{version_spec}' to Node.js version {resolved_version}");
 
+        let platform = Platform::current().node_build_platform(&resolved_version);
+        if platform != Platform::current() {
+            info!(
+                "Node.js {resolved_version} has no {} build; using the {platform} build",
+                Platform::current()
+            );
+        }
+
         Ok(Self {
-            platform: Platform::current(),
+            platform,
             cache_dir,
             node_version: resolved_version,
         })
